@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="description"
+        content="We propose learning 3D representations from procedurally generated shapes, matching state-of-the-art models trained on semantic data. Our approach highlights SSL's strength in capturing geometric structure over high-level semantics in 3D tasks.">
+  <meta name="keywords" content="Self-Supervised Learning, 3D Representation Learning, Procedural 3D Programs">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Learning 3D Representations from Procedural 3D Programs</title>
+
+  <link href="https://fonts.googleapis.com/css?family=Google+Sans|Noto+Sans|Castoro"
+        rel="stylesheet">
+
+  <link rel="stylesheet" href="./static/css/bulma.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-carousel.min.css">
+  <link rel="stylesheet" href="./static/css/bulma-slider.min.css">
+  <link rel="stylesheet" href="./static/css/fontawesome.all.min.css">
+  <link rel="stylesheet"
+        href="https://cdn.jsdelivr.net/gh/jpswalsh/academicons@1/css/academicons.min.css">
+  <link rel="stylesheet" href="./static/css/index.css">
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+  <script defer src="./static/js/fontawesome.all.min.js"></script>
+  <script src="./static/js/bulma-carousel.min.js"></script>
+  <script src="./static/js/bulma-slider.min.js"></script>
+  <script src="./static/js/index.js"></script>
+</head>
+<body>
+
+<section class="hero">
+  <div class="hero-body">
+    <div class="container is-max-desktop">
+      <div class="columns is-centered">
+        <div class="column has-text-centered">
+          <h1 class="title is-1 publication-title">Learning 3D Representations from Procedural 3D Programs</h1>
+          <div class="is-size-5 publication-authors">
+            <div class="is-size-5 publication-authors">
+              <a href="https://xuweiyichen.github.io/" class="author-block" style="margin-right: 15px; text-decoration: none;">
+                <span>Xuweiyi Chen</span>
+              </a>
+              <a href="https://sites.google.com/site/zezhoucheng/" class="author-block" style="text-decoration: none;">
+                <span>Zezhou Cheng</span>
+              </a>
+            </div>
+          </div>
+          <div class="is-size-5 publication-authors">
+            <span class="author-block">University of Virginia</span>
+          </div>
+
+          <div class="column has-text-centered">
+            <div class="publication-links">
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fas fa-file-pdf"></i>
+                  </span>
+                  <span>Paper</span>
+                </a>
+              </span>
+                <span class="link-block">
+                  <a href=""
+                      class="external-link button is-normal is-rounded is-dark">
+                    <span class="icon">
+                        &#129303; 
+                    </span>
+                    <span>Dataset</span>
+                  </a>
+                </span>
+              <span class="link-block">
+                <a href=""
+                   class="external-link button is-normal is-rounded is-dark">
+                  <span class="icon">
+                      <i class="fab fa-github"></i>
+                  </span>
+                  <span>GitHub</span>
+                </a>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+      <figure>
+        <img src="./static/images/teaser-v3.jpg" alt="Comparison of ROPE with Existing Benchmarks">
+        <figcaption>
+          <div class="content">
+            <p><strong>Main idea and key findings.</strong> We learn 3D representations with Point-MAE on two distinct datasets: (a) ShapeNet, which provides semantically meaningful 3D models, and (b) procedurally generated 3D shapes that lack semantic structure. We refer to models trained on ShapeNet as Point-MAE-SN and those trained on procedurally generated shapes as <strong>Point-MAE-Zero</strong>. In (c), the x-axis represents various tasks and benchmarks: ModelNet40 and three variants of ScanObjectNN for shape classification, and ShapeNetPart for part segmentation. Surprisingly, <strong>Point-MAE-Zero</strong> performs comparably to Point-MAE-SN on ModelNet40 and even outperforms it on the three variants of ScanObjectNN and on part segmentation. Both <strong>Point-MAE-Zero</strong> and Point-MAE-SN significantly outperform training from scratch. In (d), we show that pretrained <strong>Point-MAE-Zero</strong> can perform masked point cloud reconstruction similarly to Point-MAE-SN, without requiring fine-tuning.</p>
+          </div>
+        </figcaption>
+      </figure>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered has-text-centered">
+      <div class="column is-four-fifths">
+        <h2 class="title is-3">Abstract</h2>
+        <div class="content has-text-justified">
+          <p>
+            Self-supervised learning has emerged as a promising approach for acquiring transferable 3D representations from unlabeled 3D point clouds. Unlike 2D images, which are widely accessible, acquiring 3D assets requires specialized expertise or professional 3D scanning equipment, making it difficult to scale and raising copyright concerns. To address these challenges, we propose learning 3D representations from procedural 3D programs that automatically generate 3D shapes using simple primitives and augmentations. Remarkably, despite lacking semantic content, the 3D representations learned from this synthesized dataset perform on par with state-of-the-art representations learned from semantically recognizable 3D models (e.g., airplanes) across various downstream 3D tasks, including shape classification, part segmentation, and masked point cloud completion. Our analysis further suggests that current self-supervised learning methods primarily capture geometric structures rather than high-level semantics.          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Point-MAE-Zero</h2>
+    <div class="content has-text-justified">
+      <p>
+        <strong>Point-MAE-Zero</strong> is a self-supervised framework for learning 3D representations entirely from procedurally generated shapes, eliminating reliance on human-designed 3D models. Based on the Point-MAE architecture, it employs a masked autoencoding scheme, where 60% of input point patches are masked and reconstructed using a transformer-based encoder-decoder. The reconstruction loss is computed via the Chamfer Distance between predicted and ground-truth point patches. This approach demonstrates the potential of procedural generation for 3D representation learning, with zero human involvement beyond the initial programming.
+      </p>
+      <figure>
+        <img src="./static/images/pipeline.jpg" alt="Point-MAE-Zero Pipeline">
+        <figcaption>
+          <div class="content">
+            <p><strong>(a)</strong> Our synthetic 3D point clouds are generated by sampling, compositing, and augmenting simple primitives with procedural 3D programs. <strong>(b)</strong> We use Point-MAE as our pretraining framework to learn 3D representation from synthetic 3D shapes, dubbed <strong><em>Point-MAE-Zero</em></strong> where "Zero" underscores that we do not use any human-made 3D shapes. <strong>(c)</strong> We evaluate <strong><em>Point-MAE-Zero</em></strong> in various 3D shape understanding tasks.</p>
+          </div>
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Masked Point Cloud Completion</h2>
+    <div class="content has-text-justified">
+      <p>
+        The goal of masked point cloud completion is to reconstruct masked points in 3D point clouds, serving as a pretext task for learning 3D representations. During pretraining, a portion of point patches (e.g., 60%) is randomly masked, with only visible patches passed to the encoder, while masked patch centers guide the decoder. After pretraining, the network can reconstruct missing points with or without guidance. Experiments on ShapeNet and procedurally generated 3D shapes show that <strong>Point-MAE-Zero</strong>, trained solely on procedurally generated data, performs comparably to Point-MAE-SN on both datasets. Both models effectively leverage symmetry to estimate missing parts and exhibit slightly better performance on in-domain data. Performance declines when guidance is removed, but representations learned through masked autoencoding capture geometric features rather than semantic content.
+      </p>
+      <figure>
+        <img src="./static/images/shape_recon.jpg" alt="Masked Point Cloud Completion with two settings">
+        <figcaption>
+          <div class="content">
+            <p><strong>Heterogeneous ROPE sample.</strong> This figure visualizes shape completion results with Point-MAE-SN and Point-MAE-Zero on the test split of ShapeNet and procedurally synthesized 3D shapes. 
+            <strong>Left:</strong> Ground truth 3D point clouds and masked inputs with a 60% mask ratio. 
+            <strong>Middle:</strong> Shape completion results using the centers of masked input patches as guidance, following the training setup of Point-MAE. 
+            <strong>Right:</strong> Point cloud reconstructions without any guidance points. 
+            The $L_2$ Chamfer distance (<em>lower is better</em>) between the predicted 3D point clouds and the ground truth is displayed below each reconstruction.
+            </p>
+          </div>
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Transfer Learning on Point-MAE-Zero</h2>
+    <div class="content has-text-justified">
+      <p>
+        This section demonstrates the transfer learning performance of <strong>Point-MAE-Zero</strong> compared to <strong>Point-MAE-SN</strong> and other self-supervised learning methods. On ModelNet40, <strong>Point-MAE-Zero</strong> achieves comparable performance to <strong>Point-MAE-SN</strong>, despite the substantial domain difference between procedurally synthesized 3D models and clean 3D shapes. Interestingly, on ScanObjectNN, <strong>Point-MAE-Zero</strong> outperforms <strong>Point-MAE-SN</strong> across all three variants, showcasing the advantage of pretraining on diverse geometric and topological features. Both models significantly surpass training-from-scratch baselines and prior methods like OcCo and Point-BERT.
+      </p>
+      <div class="table-container">
+        <table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
+          <thead>
+            <tr>
+              <th>Methods</th>
+              <th>5w/10s</th>
+              <th>5w/20s</th>
+              <th>10w/10s</th>
+              <th>10w/20s</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>DGCNN-rand</td>
+              <td>31.6±2.8</td>
+              <td>40.8±4.6</td>
+              <td>19.9±2.1</td>
+              <td>16.9±1.5</td>
+            </tr>
+            <tr>
+              <td>DGCNN-OcCo</td>
+              <td>90.6±2.8</td>
+              <td>92.5±1.9</td>
+              <td>82.9±1.3</td>
+              <td>86.5±2.2</td>
+            </tr>
+            <tr>
+              <td>Transformer-OcCo</td>
+              <td>94.0±3.6</td>
+              <td>95.9±2.3</td>
+              <td>89.4±5.1</td>
+              <td>92.4±4.6</td>
+            </tr>
+            <tr>
+              <td>Point-BERT</td>
+              <td>94.6±3.1</td>
+              <td>96.3±2.7</td>
+              <td>91.0±5.4</td>
+              <td>92.7±5.1</td>
+            </tr>
+            <tr>
+              <td>Scratch</td>
+              <td>87.8±5.2</td>
+              <td>93.3±4.3</td>
+              <td>84.6±5.5</td>
+              <td>89.4±6.3</td>
+            </tr>
+            <tr>
+              <td>Point-MAE-SN</td>
+              <td><strong>96.3±2.5</strong></td>
+              <td><strong>97.8±1.8</strong></td>
+              <td><strong>92.6±4.1</strong></td>
+              <td><strong>95.0±3.0</strong></td>
+            </tr>
+            <tr>
+              <td>Point-MAE-Zero</td>
+              <td>95.4±2.5</td>
+              <td>97.7±1.6</td>
+              <td>91.3±5.1</td>
+              <td>95.0±3.5</td>
+            </tr>
+          </tbody>
+        </table>
+        <figcaption>
+          <div class="content">
+            <p><strong>Few-shot classification results.</strong> This table reports the few-shot classification performance of <strong>Point-MAE-Zero</strong> and other methods on ModelNet40. <strong>Top:</strong> Results from existing approaches like OcCo and Point-BERT. <strong>Bottom:</strong> Comparison with <strong>Point-MAE-SN</strong> and training-from-scratch baselines. Mean accuracy (\%) and standard deviation are shown for four \(n\)-way \(m\)-shot configurations (e.g., 5-way 10-shot tasks).</p>
+          </div>
+        </figcaption>
+      </div>
+    </div>
+  </div>
+</section>
+
+
+<section class="section" id="BibTeX">
+  <div class="container is-max-desktop content">
+    <h2 class="title">Citation</h2>
+    <pre><code>
+  </code></pre>
+  </div>
+</section>
+
+<footer class="footer">
+  <div class="container">
+    <div class="content has-text-centered">
+      <a class="icon-link" href="https://github.com/sled-group/multi-object-hallucination" class="external-link" disabled>
+        <i class="fab fa-github"></i>
+      </a>
+    </div>
+    <div class="columns is-centered">
+      <div class="column is-8">
+        <div class="content">
+          <p>
+            This website is adapted from <a href="https://github.com/nerfies/nerfies.github.io">Nerfies</a>, licensed
+            under a <a rel="license" href="http://creativecommons.org/licenses/by-sa/4.0/">Creative
+            Commons Attribution-ShareAlike 4.0 International License</a>.
+          </p>
+        </div>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>
