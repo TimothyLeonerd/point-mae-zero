@@ -231,7 +231,7 @@
         In object classification, Point-MAE-Zero achieves performance comparable to Point-MAE-SN on ModelNet40, highlighting the impact of domain differences between procedurally generated shapes and clean 3D models. On ScanObjectNN, Point-MAE-Zero outperforms Point-MAE-SN across all variants, demonstrating the benefits of pretraining on diverse and procedurally synthesized 3D shapes. Both models surpass training from scratch and other self-supervised approaches. Please see our paper for more results.
       </p>
       <figure>
-        <img src="/Users/chenxuweiyi/Desktop/point-mae-zero/static/images/object_classification_comparison.png" alt="Object Classification Comparison">
+        <img src="./static/images/object_classification_comparison.png" alt="Object Classification Comparison">
         <figcaption>
           <div class="content">
             <p>Object classification results comparing Point-MAE-Zero and Point-MAE-SN across various benchmarks.</p>
@@ -250,7 +250,7 @@
         The learning curves highlight the efficiency of transfer learning with Point-MAE-SN and Point-MAE-Zero. Both models converge faster and achieve higher test accuracy compared to training from scratch, a trend observed across ModelNet40 and ScanObjectNN benchmarks.
       </p>
       <figure>
-        <img src="/Users/chenxuweiyi/Desktop/point-mae-zero/static/images/learning_curve_updated.jpg" alt="Transfer Learning Efficiency">
+        <img src="./static/images/learning_curve_updated.jpg" alt="Transfer Learning Efficiency">
         <figcaption>
           <div class="content">
             <p>Learning curves for training from scratch, Point-MAE-SN, and Point-MAE-Zero on shape classification tasks.</p>
@@ -269,7 +269,7 @@
         The t-SNE visualization compares 3D shape representations from Point-MAE-SN and Point-MAE-Zero, highlighting differences before and after fine-tuning. Before fine-tuning, both models show improved separation of categories compared to training from scratch, demonstrating the effectiveness of self-supervised pretraining. After fine-tuning, the separation becomes less distinct, suggesting that high-level semantic features may not be fully learned through the masked autoencoding scheme. Structural similarities between Point-MAE-SN and Point-MAE-Zero representations suggest that both models capture comparable 3D features despite pretraining on different datasets.
       </p>
       <figure>
-        <img src="/Users/chenxuweiyi/Desktop/point-mae-zero/static/images/tsne.jpg" alt="t-SNE Visualization">
+        <img src="./static/images/tsne.jpg" alt="t-SNE Visualization">
         <figcaption>
           <div class="content">
             <p>t-SNE visualization of 3D shape representations from Point-MAE-SN and Point-MAE-Zero before and after fine-tuning.</p>
