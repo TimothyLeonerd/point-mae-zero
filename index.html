@@ -83,6 +83,20 @@
   </div>
 </section>
 
+<section class="tldr-section">
+  <div class="container is-max-desktop">
+    <div class="columns is-centered">
+      <div class="column has-text-centered">
+        <h2 class="title is-4">TL;DR</h2>
+        <p class="is-size-5">
+          Training from procedural 3D programs performs on par with training from ShapeNet on shape classification and part segmentation tasks, and can reconstruct masked ShapeNet point cloud without fine-tuning.
+        </p>
+      </div>
+    </div>
+  </div>
+</section>
+
+
 <section class="section">
   <div class="container is-max-desktop">
       <figure>
@@ -151,6 +165,60 @@
         </figcaption>
       </figure>
     </div>
+
+    <!-- Visualization Table -->
+    <h2 class="title is-4 has-text-centered">Additional Visualizations</h2>
+    <table class="table is-striped is-hoverable is-fullwidth">
+      <thead>
+        <tr>
+          <th>Visualization Type</th>
+          <th>Description</th>
+          <th>Link</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Point-MAE-SN on ShapeNet</td>
+          <td>Visualization of Point-MAE-SN on ShapeNet.</td>
+          <td><a href="./static/images/visualization_results_shapenet_on_shapenet_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-SN on ShapeNet (No guidance points)</td>
+          <td>Visualization without guidance points.</td>
+          <td><a href="./static/images/visualization_results_shapenet_on_shapenet_no_mask_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-Zero on Synthetic Data</td>
+          <td>Visualization of Point-MAE-Zero on synthetic data.</td>
+          <td><a href="./static/images/visualization_results_zeroverse_on_zeroverse_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-Zero on Synthetic Data (No guidance points)</td>
+          <td>Visualization without guidance points.</td>
+          <td><a href="./static/images/visualization_results_zeroverse_on_zeroverse_no_mask_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-SN on Synthetic Data</td>
+          <td>Visualization of Point-MAE-SN on synthetic data.</td>
+          <td><a href="./static/images/visualization_results_shapenet_on_zeroverse_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-SN on Synthetic Data (No guidance points)</td>
+          <td>Visualization without guidance points.</td>
+          <td><a href="./static/images/visualization_results_shapenet_on_zeroverse_no_mask_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-Zero on ShapeNet</td>
+          <td>Visualization of Point-MAE-Zero on ShapeNet.</td>
+          <td><a href="./static/images/visualization_results_zeroverse_on_shapenet_2.html" class="button is-link">View</a></td>
+        </tr>
+        <tr>
+          <td>Point-MAE-Zero on ShapeNet (No guidance points)</td>
+          <td>Visualization without guidance points.</td>
+          <td><a href="./static/images/visualization_results_zeroverse_on_shapenet_no_mask_2.html" class="button is-link">View</a></td>
+        </tr>
+      </tbody>
+    </table>
   </div>
 </section>
 
