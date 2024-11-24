@@ -99,17 +99,18 @@
 
 <section class="section">
   <div class="container is-max-desktop">
-      <figure>
-        <img src="./static/images/teaser-v3.jpg" alt="Comparison of ROPE with Existing Benchmarks">
-        <figcaption>
-          <div class="content">
-            <p><strong>Main idea and key findings.</strong> We learn 3D representations with Point-MAE on two distinct datasets: (a) ShapeNet, which provides semantically meaningful 3D models, and (b) procedurally generated 3D shapes that lack semantic structure. We refer to models trained on ShapeNet as Point-MAE-SN and those trained on procedurally generated shapes as <strong>Point-MAE-Zero</strong>. In (c), the x-axis represents various tasks and benchmarks: ModelNet40 and three variants of ScanObjectNN for shape classification, and ShapeNetPart for part segmentation. Surprisingly, <strong>Point-MAE-Zero</strong> performs comparably to Point-MAE-SN on ModelNet40 and even outperforms it on the three variants of ScanObjectNN and on part segmentation. Both <strong>Point-MAE-Zero</strong> and Point-MAE-SN significantly outperform training from scratch. In (d), we show that pretrained <strong>Point-MAE-Zero</strong> can perform masked point cloud reconstruction similarly to Point-MAE-SN, without requiring fine-tuning.</p>
-          </div>
-        </figcaption>
-      </figure>
+    <figure>
+      <img src="./static/images/teaser-v3.jpg" alt="Comparison of ROPE with Existing Benchmarks">
+      <figcaption>
+        <p><strong>Key Insights and Findings:</strong> 
+          (a) Point-MAE-SN is trained on ShapeNet, providing semantically meaningful 3D models. 
+          (b) Point-MAE-Zero is trained on procedurally generated 3D shapes without semantic structure. 
+          (c) Point-MAE-Zero matches or outperforms Point-MAE-SN on tasks like ModelNet40, ScanObjectNN, and ShapeNetPart, significantly outperforming training from scratch.
+        </p>
+      </figcaption>
+    </figure>
   </div>
 </section>
-
 <section class="section">
   <div class="container is-max-desktop">
     <div class="columns is-centered has-text-centered">
@@ -224,84 +225,60 @@
 
 <section class="section">
   <div class="container is-max-desktop">
-    <h2 class="title is-3 has-text-centered">Transfer Learning on Point-MAE-Zero</h2>
+    <h2 class="title is-3 has-text-centered">Object Classification Results</h2>
     <div class="content has-text-justified">
       <p>
-        This section demonstrates the transfer learning performance of <strong>Point-MAE-Zero</strong> compared to <strong>Point-MAE-SN</strong> and other self-supervised learning methods. On ModelNet40, <strong>Point-MAE-Zero</strong> achieves comparable performance to <strong>Point-MAE-SN</strong>, despite the substantial domain difference between procedurally synthesized 3D models and clean 3D shapes. Interestingly, on ScanObjectNN, <strong>Point-MAE-Zero</strong> outperforms <strong>Point-MAE-SN</strong> across all three variants, showcasing the advantage of pretraining on diverse geometric and topological features. Both models significantly surpass training-from-scratch baselines and prior methods like OcCo and Point-BERT.
+        In object classification, Point-MAE-Zero achieves performance comparable to Point-MAE-SN on ModelNet40, highlighting the impact of domain differences between procedurally generated shapes and clean 3D models. On ScanObjectNN, Point-MAE-Zero outperforms Point-MAE-SN across all variants, demonstrating the benefits of pretraining on diverse and procedurally synthesized 3D shapes. Both models surpass training from scratch and other self-supervised approaches. Please see our paper for more results.
       </p>
-      <div class="table-container">
-        <table class="table is-bordered is-striped is-narrow is-hoverable is-fullwidth">
-          <thead>
-            <tr>
-              <th>Methods</th>
-              <th>5w/10s</th>
-              <th>5w/20s</th>
-              <th>10w/10s</th>
-              <th>10w/20s</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>DGCNN-rand</td>
-              <td>31.6±2.8</td>
-              <td>40.8±4.6</td>
-              <td>19.9±2.1</td>
-              <td>16.9±1.5</td>
-            </tr>
-            <tr>
-              <td>DGCNN-OcCo</td>
-              <td>90.6±2.8</td>
-              <td>92.5±1.9</td>
-              <td>82.9±1.3</td>
-              <td>86.5±2.2</td>
-            </tr>
-            <tr>
-              <td>Transformer-OcCo</td>
-              <td>94.0±3.6</td>
-              <td>95.9±2.3</td>
-              <td>89.4±5.1</td>
-              <td>92.4±4.6</td>
-            </tr>
-            <tr>
-              <td>Point-BERT</td>
-              <td>94.6±3.1</td>
-              <td>96.3±2.7</td>
-              <td>91.0±5.4</td>
-              <td>92.7±5.1</td>
-            </tr>
-            <tr>
-              <td>Scratch</td>
-              <td>87.8±5.2</td>
-              <td>93.3±4.3</td>
-              <td>84.6±5.5</td>
-              <td>89.4±6.3</td>
-            </tr>
-            <tr>
-              <td>Point-MAE-SN</td>
-              <td><strong>96.3±2.5</strong></td>
-              <td><strong>97.8±1.8</strong></td>
-              <td><strong>92.6±4.1</strong></td>
-              <td><strong>95.0±3.0</strong></td>
-            </tr>
-            <tr>
-              <td>Point-MAE-Zero</td>
-              <td>95.4±2.5</td>
-              <td>97.7±1.6</td>
-              <td>91.3±5.1</td>
-              <td>95.0±3.5</td>
-            </tr>
-          </tbody>
-        </table>
+      <figure>
+        <img src="/Users/chenxuweiyi/Desktop/point-mae-zero/static/images/object_classification_comparison.png" alt="Object Classification Comparison">
         <figcaption>
           <div class="content">
-            <p><strong>Few-shot classification results.</strong> This table reports the few-shot classification performance of <strong>Point-MAE-Zero</strong> and other methods on ModelNet40. <strong>Top:</strong> Results from existing approaches like OcCo and Point-BERT. <strong>Bottom:</strong> Comparison with <strong>Point-MAE-SN</strong> and training-from-scratch baselines. Mean accuracy (\%) and standard deviation are shown for four \(n\)-way \(m\)-shot configurations (e.g., 5-way 10-shot tasks).</p>
+            <p>Object classification results comparing Point-MAE-Zero and Point-MAE-SN across various benchmarks.</p>
           </div>
         </figcaption>
-      </div>
+      </figure>
     </div>
   </div>
 </section>
 
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">Efficiency of Transfer Learning</h2>
+    <div class="content has-text-justified">
+      <p>
+        The learning curves highlight the efficiency of transfer learning with Point-MAE-SN and Point-MAE-Zero. Both models converge faster and achieve higher test accuracy compared to training from scratch, a trend observed across ModelNet40 and ScanObjectNN benchmarks.
+      </p>
+      <figure>
+        <img src="/Users/chenxuweiyi/Desktop/point-mae-zero/static/images/learning_curve_updated.jpg" alt="Transfer Learning Efficiency">
+        <figcaption>
+          <div class="content">
+            <p>Learning curves for training from scratch, Point-MAE-SN, and Point-MAE-Zero on shape classification tasks.</p>
+          </div>
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container is-max-desktop">
+    <h2 class="title is-3 has-text-centered">t-SNE Visualization</h2>
+    <div class="content has-text-justified">
+      <p>
+        The t-SNE visualization compares 3D shape representations from Point-MAE-SN and Point-MAE-Zero, highlighting differences before and after fine-tuning. Before fine-tuning, both models show improved separation of categories compared to training from scratch, demonstrating the effectiveness of self-supervised pretraining. After fine-tuning, the separation becomes less distinct, suggesting that high-level semantic features may not be fully learned through the masked autoencoding scheme. Structural similarities between Point-MAE-SN and Point-MAE-Zero representations suggest that both models capture comparable 3D features despite pretraining on different datasets.
+      </p>
+      <figure>
+        <img src="/Users/chenxuweiyi/Desktop/point-mae-zero/static/images/tsne.jpg" alt="t-SNE Visualization">
+        <figcaption>
+          <div class="content">
+            <p>t-SNE visualization of 3D shape representations from Point-MAE-SN and Point-MAE-Zero before and after fine-tuning.</p>
+          </div>
+        </figcaption>
+      </figure>
+    </div>
+  </div>
+</section>
 
 <section class="section" id="BibTeX">
   <div class="container is-max-desktop content">
