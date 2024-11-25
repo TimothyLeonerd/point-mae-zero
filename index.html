@@ -23,6 +23,9 @@
   <script src="./static/js/bulma-carousel.min.js"></script>
   <script src="./static/js/bulma-slider.min.js"></script>
   <script src="./static/js/index.js"></script>
+  <div style="display:none">
+    <script type="text/javascript" id="clustrmaps" src="//clustrmaps.com/map_v2.js?d=xZ3D3HEPA_ukIGzZXffPqouvWznfm0wTkgoPH5P2pAE&cl=ffffff&w=a"></script>
+  </div>
 </head>
 <body>
 
@@ -312,16 +315,4 @@
     </div>
   </div>
 </footer>
-<script type="text/javascript" id="clustrmaps" src="//clustrmaps.com/map_v2.js?d=xZ3D3HEPA_ukIGzZXffPqouvWznfm0wTkgoPH5P2pAE&cl=ffffff&w=a"></script>
-<script>
-  document.addEventListener("DOMContentLoaded", function () {
-    // Wait a short time to ensure ClustrMaps has loaded its elements
-    setTimeout(function () {
-      // Target and remove ClustrMaps iframe and container elements
-      const clustrmapsElements = document.querySelectorAll('iframe[src*="clustrmaps.com"], div[id*="clustrmaps"]');
-      clustrmapsElements.forEach(el => el.remove());
-    }, 1000); // Adjust the delay if needed
-  });
-</script>
-</body>
 </html>
