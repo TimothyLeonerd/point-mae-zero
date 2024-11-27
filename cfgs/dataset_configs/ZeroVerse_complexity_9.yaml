@@ -1,0 +1,4 @@
+NAME: ZeroVerse
+DATA_PATH: data/ZeroVerse/split_complexity_level_9
+N_POINTS: 8192
+PC_PATH: <YOUR DATA DIR>

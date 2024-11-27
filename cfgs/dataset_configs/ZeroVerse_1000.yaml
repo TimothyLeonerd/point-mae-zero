@@ -1,0 +1,4 @@
+NAME: ZeroVerse
+DATA_PATH: data/ZeroVerse/zeroverse_12_1000
+N_POINTS: 8192
+PC_PATH: <YOUR DATA DIR>
