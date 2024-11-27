@@ -3,7 +3,7 @@
 [![Project](https://img.shields.io/badge/Project-Page-20B2AA.svg)](https://point-mae-zero.cs.virginia.edu/
 )
 [![Paper](https://img.shields.io/badge/arXiv-Paper-red.svg)](https://arxiv.org/abs/2411.17467)
-[![Dataset](https://img.shields.io/badge/Dataset-Download%20Here-blue)]([YOUR_DATASET_LINK_HERE](https://huggingface.co/datasets/uva-cv-lab/Point-MAE-Zero))
+[![Dataset](https://img.shields.io/badge/Dataset-Download%20Here-blue)](https://huggingface.co/datasets/uva-cv-lab/Point-MAE-Zero)
 
 
 This repository provides the official implementation for the paper [Learning 3D Representations from Procedural 3D Programs](https://arxiv.org/abs/2411.17467). The paper introduces a self-supervised approach for learning 3D representations using procedural 3D programs. The proposed method achieves comparable performance to learning from ShapeNet on various downstream 3D tasks and significantly outperforms training from scratch.
