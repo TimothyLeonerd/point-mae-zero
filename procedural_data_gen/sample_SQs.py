@@ -1,4 +1,6 @@
+import open3d as o3d
 import numpy as np
+import matplotlib.pyplot as plt
 
 def sample_SQ_naive(sq_pars, n_theta, n_phi):
     assert(len(sq_pars)== 5)
@@ -42,5 +44,16 @@ def sample_SQ_naive(sq_pars, n_theta, n_phi):
 
     return points
 
+def show_points(points):
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_subplot(111, projection='3d')
 
+    ax.scatter(points[:, 0], points[:, 1], points[:, 2])
+    plt.show()
+
+def save_pc(file, points):
+    pcd = o3d.geometry.PointCloud()
+    pcd.points = o3d.utility.Vector3dVector(points)
+
+    o3d.io.write_point_cloud(file, pcd, write_ascii=True)
     
