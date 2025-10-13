@@ -1,11 +1,19 @@
 import open3d as o3d
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.spatial.transform import Rotation as Rot
 
 def sample_SQ_naive(sq_pars, n_theta, n_phi):
-    assert(len(sq_pars)== 5)
+    assert(len(sq_pars) == 5 or len(sq_pars) == 11)
 
-    a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+    if(len(sq_pars) == 5):
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+        euler = None # xyz
+        t = None
+    elif(len(sq_pars) == 11):
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[0:5]
+        euler = sq_pars[5:8]
+        t = sq_pars[8:11]
 
     points = np.zeros((n_theta * n_phi, 3), dtype=float) # allocate array
 
@@ -42,7 +50,46 @@ def sample_SQ_naive(sq_pars, n_theta, n_phi):
 
         theta += d_theta # increment theta (North-South)
 
+    # optional rotation
+    if euler is not None:
+        R = Rot.from_euler('xyz', euler).as_matrix()
+        points = points @ R.T
+
+    # optional translation
+    if t is not None:
+        points = points + np.asarray(t)
+
     return points
+
+
+def set_equal_axes_quadrant_aware(ax, points):
+    P = np.asarray(points)[:, :3]
+    mins, maxs = P.min(0), P.max(0)
+    lo, hi = mins.copy(), maxs.copy()
+
+    # Clamp to zero if data is one-sided on an axis
+    for k in range(3):
+        if mins[k] >= 0: lo[k] = 0       # all ≥ 0 -> start at 0
+        if maxs[k] <= 0: hi[k] = 0       # all ≤ 0 -> end at 0
+
+    spans = hi - lo
+    R = spans.max()  # target common span
+
+    # Grow each axis to length R with minimal empty space
+    for k in range(3):
+        if spans[k] == R: 
+            continue
+        if lo[k] == 0 and hi[k] > 0:        # positive-only axis
+            hi[k] = R
+        elif hi[k] == 0 and lo[k] < 0:      # negative-only axis
+            lo[k] = -R
+        else:                               # mixed-sign: expand both sides evenly
+            d = (R - spans[k]) / 2.0
+            lo[k] -= d; hi[k] += d
+
+    ax.set_xlim(lo[0], hi[0]); ax.set_ylim(lo[1], hi[1]); ax.set_zlim(lo[2], hi[2])
+    ax.set_box_aspect((1,1,1))  # equal visual aspect
+
 
 def show_points(points, point_size=5):
     fig = plt.figure(figsize=(8, 8))
@@ -54,6 +101,12 @@ def show_points(points, point_size=5):
         ax.legend()
     else:
         ax.scatter(points[:, 0], points[:, 1], points[:, 2], s=point_size)
+
+    set_equal_axes_quadrant_aware(ax, points)
+
+    ax.set_xlabel("x")
+    ax.set_ylabel("y")
+    ax.set_zlabel("z")
     plt.show()
 
 def save_pc(file, points):
