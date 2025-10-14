@@ -152,8 +152,6 @@ def remove_points_inside_SQ(points, sq_pars):
         if(point_is_inside_SQ(points[i], sq_pars)):
             indices.append(i)
 
-    print(len(indices))
-
     return np.delete(points, indices, axis=0)
 
     
@@ -169,3 +167,23 @@ def sample_two_SQ_naive(sq_pars_1st, sq_pars_2nd, n_theta, n_phi):
     points_2nd = np.concatenate((points_2nd, np.full((points_2nd.shape[0], 1), 1)), axis=1)
 
     return np.concatenate((points_1st, points_2nd), axis=0)
+
+def sample_N_SQs_naive(sq_pars_N, n_theta, n_phi):
+    n_SQs = len(sq_pars_N) # number of SQs
+
+    all_points_list = []
+
+    for i in range(n_SQs):
+        current_points = sample_SQ_naive(sq_pars_N[i], n_theta, n_phi)
+
+        # Remove points within other SQs
+        for j in range(n_SQs):
+            if j is not i:
+                current_points = remove_points_inside_SQ(current_points, sq_pars_N[j])
+
+
+        # add ids to distinguish sq
+        current_points = np.concatenate((current_points, np.full((current_points.shape[0], 1), i)), axis=1)
+        all_points_list.append(current_points)
+
+    return np.concatenate(all_points_list, axis=0)
