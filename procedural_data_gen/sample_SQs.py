@@ -116,13 +116,28 @@ def save_pc(file, points):
     o3d.io.write_point_cloud(file, pcd, write_ascii=True)
 
 def point_is_inside_SQ(point, sq_pars):
+    assert(len(sq_pars) == 5 or len(sq_pars) == 11)
+
+    if(len(sq_pars) == 5):
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+        euler = None # xyz
+        t = None
+    elif(len(sq_pars) == 11):
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[0:5]
+        euler = sq_pars[5:8]
+        R_inv = Rot.from_euler('xyz', euler).inv().as_matrix()
+        t = sq_pars[8:11]
+
+        # Inv. rot. and translation that was applied
+        point = R_inv @ (point - t)
+
     # ToDo: This only works with np.abs (heuristically tested)
     # Without it, only one quadrant correctly detected. Why?
     x = np.abs(point[0])
     y = np.abs(point[1])
     z = np.abs(point[2])
 
-    a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+    #a_x, a_y, a_z, eps_1, eps_2 = sq_pars
 
     # implicit Superellipsoid function
     f = ( (x/a_x)**(2.0/eps_2) + (y/a_y)**(2.0/eps_2) )**(eps_2/eps_1) + (z/a_z)**(2.0/eps_1)
