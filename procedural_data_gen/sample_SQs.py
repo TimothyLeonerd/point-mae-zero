@@ -187,3 +187,99 @@ def sample_N_SQs_naive(sq_pars_N, n_theta, n_phi):
         all_points_list.append(current_points)
 
     return np.concatenate(all_points_list, axis=0)
+
+
+def get_random_SQ_pars():
+
+    # Set min and max vals (ToDo: Handle better)
+    # a values
+    a_default_min = 0.1
+    a_x_min = a_default_min
+    a_x_max = 1.0
+    a_y_min = a_default_min
+    a_y_max = 1.0
+    a_z_min = a_default_min
+    a_z_max = 3.0 # perhaps good due to sampling
+
+    # Exponents
+    eps_1_min = 0.0
+    eps_1_max = 3.0
+    eps_2_min = 0.0
+    eps_2_max = 3.0
+
+    # Euler-angles
+    euler_x_min = 0.0
+    euler_x_max = 2* np.pi
+    euler_y_min = 0.0
+    euler_y_max = 2* np.pi
+    euler_z_min = 0.0
+    euler_z_max = 2* np.pi
+
+    # Translations
+    t_default_min = -0.5
+    t_default_max = -t_default_min
+    t_x_min = t_default_min
+    t_x_max = t_default_max
+    t_y_min = t_default_min
+    t_y_max = t_default_max
+    t_z_min = t_default_min
+    t_z_max = t_default_max
+
+    # Sample values
+    a_x = np.random.uniform(a_x_min, a_x_max)
+    a_y = np.random.uniform(a_y_min, a_y_max)
+    a_z = np.random.uniform(a_z_min, a_z_max)
+
+    eps_1 = np.random.uniform(eps_1_min, eps_1_max)
+    eps_2 = np.random.uniform(eps_2_min, eps_2_max)
+
+    euler_x = np.random.uniform(euler_x_min, euler_x_max)
+    euler_y = np.random.uniform(euler_y_min, euler_y_max)
+    euler_z = np.random.uniform(euler_z_min, euler_z_max)
+
+    t_x = np.random.uniform(t_x_min, t_x_max)
+    t_y = np.random.uniform(t_y_min, t_y_max)
+    t_z = np.random.uniform(t_z_min, t_z_max)
+
+    sq_pars = [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
+
+    return sq_pars
+
+
+def get_random_SQ_pars_v_2(seed=None, centered=False):
+    """
+    Sample a realistic, numerically stable set of superquadric parameters.
+    Returns a list:
+        [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
+    """
+
+    if seed is not None:
+        np.random.seed(seed)
+
+    # --- 1. Scale parameters (avoid degeneracies) ---
+    # Log-uniform for better coverage of small and large scales
+    a_x = 10 ** np.random.uniform(-0.3, 0.3)  # ~[0.5, 2.0]
+    a_y = 10 ** np.random.uniform(-0.3, 0.3)
+    a_z = 10 ** np.random.uniform(-0.3, 0.6)  # allow taller shapes
+
+    # Optionally normalize to roughly constant volume
+    volume_norm = (a_x * a_y * a_z) ** (1/3)
+    a_x, a_y, a_z = a_x / volume_norm, a_y / volume_norm, a_z / volume_norm
+
+    # --- 2. Exponents (roundness) ---
+    eps_1 = np.random.uniform(0.3, 3.0)
+    eps_2 = np.random.uniform(0.3, 3.0)
+
+    # --- 3. Orientation (uniform over SO(3)) ---
+    rot = Rot.random()
+    euler_x, euler_y, euler_z = rot.as_euler('xyz', degrees=False)
+
+    # --- 4. Translation ---
+    if centered:
+        t_x, t_y, t_z = 0.0, 0.0, 0.0
+    else:
+        t_x = np.random.uniform(-1.0, 1.0)
+        t_y = np.random.uniform(-1.0, 1.0)
+        t_z = np.random.uniform(-1.0, 1.0)
+
+    return [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
