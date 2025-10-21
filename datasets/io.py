@@ -1,7 +1,63 @@
-import h5py
-import numpy as np
-# import open3d
 import os
+import io as _io
+
+import numpy as np
+import h5py
+
+# Lazy LMDB setup (only used if ZERO_LMDB_DIR is set)
+_LMDB_ENVS = None
+
+def _lmdb_envs():
+    """Open all LMDB dirs under ZERO_LMDB_DIR once, lazily."""
+    global _LMDB_ENVS
+    if _LMDB_ENVS is not None:
+        return _LMDB_ENVS
+    lmdb_dir = os.environ.get("ZERO_LMDB_DIR")
+    if not lmdb_dir or not os.path.isdir(lmdb_dir):
+        _LMDB_ENVS = []
+        return _LMDB_ENVS
+    try:
+        import lmdb  # only import if needed
+    except Exception:
+        _LMDB_ENVS = []
+        return _LMDB_ENVS
+    envs = []
+    for name in sorted(os.listdir(lmdb_dir)):
+        p = os.path.join(lmdb_dir, name)
+        if os.path.isdir(p):
+            try:
+                envs.append(lmdb.open(p, readonly=True, lock=False, readahead=True, subdir=True))
+            except Exception:
+                pass
+    _LMDB_ENVS = envs
+    return _LMDB_ENVS
+
+def _rel_from_abs(file_path: str):
+    """Compute dataset-relative key (e.g., 'uuid/object_aug.npy')."""
+    pc_root = os.environ.get("ZERO_PC_ROOT")
+    if pc_root and file_path.startswith(pc_root.rstrip("/") + "/"):
+        return os.path.relpath(file_path, pc_root)
+    # fallback: split by known segment
+    marker = "/data/results/"
+    if marker in file_path:
+        return file_path.split(marker, 1)[1]
+    return None  # give up → disk fallback
+
+def _try_lmdb_get(file_path: str):
+    """Return np array from LMDB if present; else None."""
+    rel = _rel_from_abs(file_path)
+    if not rel:
+        return None
+    envs = _lmdb_envs()
+    if not envs:
+        return None
+    key = rel.encode("utf-8")
+    for env in envs:
+        with env.begin(write=False) as txn:
+            raw = txn.get(key)
+            if raw is not None:
+                return np.load(_io.BytesIO(raw))
+    return None
 
 class IO:
     @classmethod
@@ -22,7 +78,12 @@ class IO:
     # References: https://github.com/numpy/numpy/blob/master/numpy/lib/format.py
     @classmethod
     def _read_npy(cls, file_path):
+        # Try LMDB first (if enabled), then disk
+        arr = _try_lmdb_get(file_path)
+        if arr is not None:
+            return arr
         return np.load(file_path)
+
        
     # References: https://github.com/dimatura/pypcd/blob/master/pypcd/pypcd.py#L275
     # Support PCD files without compression ONLY!
