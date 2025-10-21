@@ -1,4 +1,11 @@
+# Exact keys required by datasets/ZeroDataset.py
+
 NAME: ZeroVerse
-DATA_PATH: data/ZeroVerse/split_new
-N_POINTS: 8192
-PC_PATH: <YOUR DATA DIR>
+
+# Directory that CONTAINS train.txt and test.txt
+DATA_PATH: /home/tylerich/work/Master_Arbeit/point-mae-zero/data/ZeroVerse/split_git_lfs_clean
+
+# Root directory of point files; entries in the split files are RELATIVE to this dir
+PC_PATH: /home/tylerich/work/Master_Arbeit/point-mae-zero/full_lfs/data/results
+
+N_POINTS: 8192       # Original number of points in pcs!
