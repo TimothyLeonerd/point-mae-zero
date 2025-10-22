@@ -10,7 +10,8 @@ from utils.logger import *
 class ZeroVerse(data.Dataset):
     def __init__(self, config):
         self.data_root = config.DATA_PATH 
-        self.pc_path = config.PC_PATH 
+        self.pc_path = config.PC_PATH
+        self.use_lmdb = config.USE_LMDB
         self.subset = config.subset
         self.npoints = config.N_POINTS
         
@@ -58,8 +59,12 @@ class ZeroVerse(data.Dataset):
         
     def __getitem__(self, idx):
         sample = self.file_list[idx]
-        print_log(f"Use [Sample] ${sample['file_path']}$", logger = 'viz_zeroverse')
-        data = IO.get(os.path.join(self.pc_path, sample['file_path'])).astype(np.float32)
+        #print_log(f"Use [Sample] ${sample['file_path']}$", logger = 'viz_zeroverse')
+
+        if not self.use_lmdb:
+            data = IO.get(os.path.join(self.pc_path, sample['file_path'])).astype(np.float32)
+        else:
+            data = IO.get_lmdb(sample['file_path'], self.pc_path)
 
         data = self.random_sample(data, self.sample_points_num)
         data = self.pc_norm(data)

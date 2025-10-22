@@ -1,12 +1,15 @@
 # Exact keys required by datasets/ZeroDataset.py
-
 NAME: ZeroVerse
 
 # Directory that CONTAINS train.txt and test.txt
-DATA_PATH: /home/tylerich/work/Master_Arbeit/point-mae-zero/data/ZeroVerse/split_poc
+DATA_PATH: /home/tylerich/work/Master_Arbeit/point-mae-zero/data/ZeroVerse/split_git_lfs_clean
 
 # Root directory of point files; entries in the split files are RELATIVE to this dir
-PC_PATH: /home/tylerich/work/Master_Arbeit/point-mae-zero/full_lfs/data/results
+PC_PATH: /home/tylerich/work/Master_Arbeit/point-mae-zero/tools/lmdb_shards/train
 
-# ZeroDataset reads BOTH of these names:
-N_POINTS: 8192       # Original number of points in pcs!
+# Where LMDB shards live (parent). We’ll append /train or /test automatically.
+USE_LMDB: True
+
+N_POINTS: 8192
+
+whole: false
