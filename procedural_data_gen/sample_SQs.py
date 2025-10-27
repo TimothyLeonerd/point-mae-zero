@@ -109,11 +109,42 @@ def show_points(points, point_size=5):
     ax.set_zlabel("z")
     plt.show()
 
-def save_pc(file, points):
+# Note: Does not save labels
+def save_pc(path, points):
+    pts = np.asarray(points)
+    xyz = pts[:, :3].astype(np.float64, copy=False)
     pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(points)
+    pcd.points = o3d.utility.Vector3dVector(xyz)
+    o3d.io.write_point_cloud(str(path), pcd, write_ascii=True)
 
-    o3d.io.write_point_cloud(file, pcd, write_ascii=True)
+def read_pc(path):
+    if not os.path.isfile(path): raise FileNotFoundError(path)
+    pcd = o3d.io.read_point_cloud(str(path))
+    return np.asarray(pcd.points, dtype=np.float32)
+
+# Note: Saves labels
+def save_npy(path, points, keep_labels=True):
+    pts = np.asarray(points)
+    xyz = pts[:, :3].astype(np.float32, copy=False)
+    if keep_labels and pts.shape[1] >= 4:
+        np.save(path, {'points': xyz, 'labels': pts[:, 3].astype(np.int64, copy=False)})
+    else:
+        np.save(path, xyz)
+
+def read_npy(path):
+    obj = np.load(path, allow_pickle=True)
+    if isinstance(obj, dict):
+        pts = np.asarray(obj['points'], dtype=np.float32)
+        lbl = obj.get('labels'); lbl = None if lbl is None else np.asarray(lbl, dtype=np.int64)
+        return pts, lbl
+    if isinstance(obj, np.ndarray):
+        if obj.ndim == 0 and obj.dtype == object:
+            d = obj.item(); return np.asarray(d['points'], dtype=np.float32), np.asarray(d.get('labels'), dtype=np.int64) if d.get('labels') is not None else None
+        if obj.ndim == 2 and obj.shape[1] == 3:
+            return obj.astype(np.float32, copy=False), None
+    raise ValueError("Unsupported .npy content (expected dict or (N,3) array).")
+
+
 
 def point_is_inside_SQ(point, sq_pars):
     assert(len(sq_pars) == 5 or len(sq_pars) == 11)
