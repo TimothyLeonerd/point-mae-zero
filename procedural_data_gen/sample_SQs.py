@@ -61,6 +61,34 @@ def sample_SQ_naive(sq_pars, n_theta, n_phi):
 
     return points
 
+def sample_SQ_naive_exactN(sq_pars, n_points, rng=None):
+    """
+    Oversample on a k×k grid with k=ceil(sqrt(n_points)) using sample_SQ_naive,
+    then uniformly subsample to exactly n_points. Inherits the same parameterization
+    (so it keeps the naive pole bias, as intended for now).
+    """
+    import numpy as np
+
+    if n_points <= 0:
+        raise ValueError("n_points must be positive")
+
+    k = int(np.ceil(np.sqrt(n_points)))
+    M = k * k
+    dense = sample_SQ_naive(sq_pars, k, k)   # (M, 3)
+
+    if M == n_points:
+        return dense
+
+    # rng can be: None (global), an int seed, or a np.random.Generator
+    if rng is None:
+        idx = np.random.choice(M, size=n_points, replace=False)
+    else:
+        gen = np.random.default_rng(rng) if isinstance(rng, (int, np.integer)) else rng
+        idx = gen.choice(M, size=n_points, replace=False)
+
+    return dense[idx]
+
+
 
 def set_equal_axes_quadrant_aware(ax, points):
     P = np.asarray(points)[:, :3]
