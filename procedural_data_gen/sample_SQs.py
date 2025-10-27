@@ -247,6 +247,53 @@ def sample_N_SQs_naive(sq_pars_N, n_theta, n_phi):
 
     return np.concatenate(all_points_list, axis=0)
 
+def sample_N_SQs_naive_exactN(sq_pars_N, n_points, alpha=2.0, growth=1.3, max_rounds=6, rng=None):
+    """
+    Oversample each SQ on a k×k grid (same k for all), remove overlaps, then
+    uniformly subsample globally to exactly n_points. If not enough survivors,
+    increase k multiplicatively and retry (up to max_rounds).
+    """
+
+    if n_points <= 0:
+        raise ValueError("n_points must be positive")
+    n_SQs = len(sq_pars_N)
+    if n_SQs == 0:
+        return np.empty((0, 4), dtype=float)
+
+    k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_SQs))))
+    gen = (np.random.default_rng(rng) if rng is not None and
+           not isinstance(rng, np.random.Generator) else rng)
+
+    for _ in range(max_rounds):
+        all_pts = []
+        for i in range(n_SQs):
+            pts = sample_SQ_naive(sq_pars_N[i], k, k)  # (k*k, 3)
+            for j in range(n_SQs):
+                if j != i:  # (avoid 'is not' for ints)
+                    pts = remove_points_inside_SQ(pts, sq_pars_N[j])
+            if pts.size:
+                ids = np.full((pts.shape[0], 1), i)
+                all_pts.append(np.concatenate([pts, ids], axis=1))
+
+        if not all_pts:
+            k = int(np.ceil(k * growth))
+            continue
+
+        survivors = np.concatenate(all_pts, axis=0)
+        M = survivors.shape[0]
+        if M >= n_points:
+            if gen is None:
+                idx = np.random.choice(M, n_points, replace=False)
+            else:
+                idx = gen.choice(M, n_points, replace=False)
+            return survivors[idx]
+
+        # Not enough survivors: increase density and try again
+        k = int(np.ceil(k * growth))
+
+    raise ValueError(f"Could not reach {n_points} points after {max_rounds} rounds; last count={M}, k={k}")
+
+
 
 def get_random_SQ_pars():
 
