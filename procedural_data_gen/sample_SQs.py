@@ -2,9 +2,11 @@ import open3d as o3d
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as Rot
+from numpy.random import Generator
 
 def sample_SQ_naive(sq_pars, n_theta, n_phi):
     assert(len(sq_pars) == 5 or len(sq_pars) == 11)
+    assert n_theta > 0 and n_phi > 0, "n_theta and n_phi must be positive"
 
     if(len(sq_pars) == 5):
         a_x, a_y, a_z, eps_1, eps_2 = sq_pars
@@ -60,34 +62,6 @@ def sample_SQ_naive(sq_pars, n_theta, n_phi):
         points = points + np.asarray(t)
 
     return points
-
-def sample_SQ_naive_exactN(sq_pars, n_points, rng=None):
-    """
-    Oversample on a k×k grid with k=ceil(sqrt(n_points)) using sample_SQ_naive,
-    then uniformly subsample to exactly n_points. Inherits the same parameterization
-    (so it keeps the naive pole bias, as intended for now).
-    """
-    import numpy as np
-
-    if n_points <= 0:
-        raise ValueError("n_points must be positive")
-
-    k = int(np.ceil(np.sqrt(n_points)))
-    M = k * k
-    dense = sample_SQ_naive(sq_pars, k, k)   # (M, 3)
-
-    if M == n_points:
-        return dense
-
-    # rng can be: None (global), an int seed, or a np.random.Generator
-    if rng is None:
-        idx = np.random.choice(M, size=n_points, replace=False)
-    else:
-        gen = np.random.default_rng(rng) if isinstance(rng, (int, np.integer)) else rng
-        idx = gen.choice(M, size=n_points, replace=False)
-
-    return dense[idx]
-
 
 
 def set_equal_axes_quadrant_aware(ax, points):
@@ -237,7 +211,7 @@ def sample_N_SQs_naive(sq_pars_N, n_theta, n_phi):
 
         # Remove points within other SQs
         for j in range(n_SQs):
-            if j is not i:
+            if j != i:
                 current_points = remove_points_inside_SQ(current_points, sq_pars_N[j])
 
 
@@ -246,111 +220,6 @@ def sample_N_SQs_naive(sq_pars_N, n_theta, n_phi):
         all_points_list.append(current_points)
 
     return np.concatenate(all_points_list, axis=0)
-
-def sample_N_SQs_naive_exactN(sq_pars_N, n_points, alpha=2.0, growth=1.3, max_rounds=6, rng=None):
-    """
-    Oversample each SQ on a k×k grid (same k for all), remove overlaps, then
-    uniformly subsample globally to exactly n_points. If not enough survivors,
-    increase k multiplicatively and retry (up to max_rounds).
-    """
-
-    if n_points <= 0:
-        raise ValueError("n_points must be positive")
-    n_SQs = len(sq_pars_N)
-    if n_SQs == 0:
-        return np.empty((0, 4), dtype=float)
-
-    k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_SQs))))
-    gen = (np.random.default_rng(rng) if rng is not None and
-           not isinstance(rng, np.random.Generator) else rng)
-
-    for _ in range(max_rounds):
-        all_pts = []
-        for i in range(n_SQs):
-            pts = sample_SQ_naive(sq_pars_N[i], k, k)  # (k*k, 3)
-            for j in range(n_SQs):
-                if j != i:  # (avoid 'is not' for ints)
-                    pts = remove_points_inside_SQ(pts, sq_pars_N[j])
-            if pts.size:
-                ids = np.full((pts.shape[0], 1), i)
-                all_pts.append(np.concatenate([pts, ids], axis=1))
-
-        if not all_pts:
-            k = int(np.ceil(k * growth))
-            continue
-
-        survivors = np.concatenate(all_pts, axis=0)
-        M = survivors.shape[0]
-        if M >= n_points:
-            if gen is None:
-                idx = np.random.choice(M, n_points, replace=False)
-            else:
-                idx = gen.choice(M, n_points, replace=False)
-            return survivors[idx]
-
-        # Not enough survivors: increase density and try again
-        k = int(np.ceil(k * growth))
-
-    raise ValueError(f"Could not reach {n_points} points after {max_rounds} rounds; last count={M}, k={k}")
-
-
-
-def get_random_SQ_pars():
-
-    # Set min and max vals (ToDo: Handle better)
-    # a values
-    a_default_min = 0.1
-    a_x_min = a_default_min
-    a_x_max = 1.0
-    a_y_min = a_default_min
-    a_y_max = 1.0
-    a_z_min = a_default_min
-    a_z_max = 3.0 # perhaps good due to sampling
-
-    # Exponents
-    eps_1_min = 0.0
-    eps_1_max = 3.0
-    eps_2_min = 0.0
-    eps_2_max = 3.0
-
-    # Euler-angles
-    euler_x_min = 0.0
-    euler_x_max = 2* np.pi
-    euler_y_min = 0.0
-    euler_y_max = 2* np.pi
-    euler_z_min = 0.0
-    euler_z_max = 2* np.pi
-
-    # Translations
-    t_default_min = -0.5
-    t_default_max = -t_default_min
-    t_x_min = t_default_min
-    t_x_max = t_default_max
-    t_y_min = t_default_min
-    t_y_max = t_default_max
-    t_z_min = t_default_min
-    t_z_max = t_default_max
-
-    # Sample values
-    a_x = np.random.uniform(a_x_min, a_x_max)
-    a_y = np.random.uniform(a_y_min, a_y_max)
-    a_z = np.random.uniform(a_z_min, a_z_max)
-
-    eps_1 = np.random.uniform(eps_1_min, eps_1_max)
-    eps_2 = np.random.uniform(eps_2_min, eps_2_max)
-
-    euler_x = np.random.uniform(euler_x_min, euler_x_max)
-    euler_y = np.random.uniform(euler_y_min, euler_y_max)
-    euler_z = np.random.uniform(euler_z_min, euler_z_max)
-
-    t_x = np.random.uniform(t_x_min, t_x_max)
-    t_y = np.random.uniform(t_y_min, t_y_max)
-    t_z = np.random.uniform(t_z_min, t_z_max)
-
-    sq_pars = [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
-
-    return sq_pars
-
 
 def get_random_SQ_pars_v_2(seed=None, centered=False):
     """
@@ -389,3 +258,73 @@ def get_random_SQ_pars_v_2(seed=None, centered=False):
         t_z = np.random.uniform(-1.0, 1.0)
 
     return [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
+
+def _require_gen(rng):
+    if not isinstance(rng, Generator):
+        raise TypeError("rng must be a numpy.random.Generator (e.g., np.random.default_rng(42))")
+    return rng
+
+def get_random_SQ_pars(rng: Generator, centered: bool=False):
+    rng = _require_gen(rng)
+    U = rng.uniform
+
+    a_x = U(0.1, 1.0); a_y = U(0.1, 1.0); a_z = U(0.1, 3.0)
+    eps_1 = U(0.0, 3.0); eps_2 = U(0.0, 3.0)
+    euler_x = U(0.0, 2*np.pi); euler_y = U(0.0, 2*np.pi); euler_z = U(0.0, 2*np.pi)
+
+    if centered:
+        t_x = t_y = t_z = 0.0
+    else:
+        t_x = U(-0.5, 0.5); t_y = U(-0.5, 0.5); t_z = U(-0.5, 0.5)
+
+    return [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
+
+def sample_SQ_naive_exactN(sq_pars, n_points: int, rng: Generator):
+    """Uses your existing sample_SQ_naive; oversample to k×k then thin to exactly n_points."""
+    rng = _require_gen(rng)
+    k = int(np.ceil(np.sqrt(n_points)))
+    dense = sample_SQ_naive(sq_pars, k, k)
+    if dense.shape[0] == n_points:
+        return dense
+    idx = rng.choice(dense.shape[0], size=n_points, replace=False)
+    return dense[idx]
+
+def sample_N_SQs_naive_exactN(sq_pars_N, n_points: int, *, alpha=2.0, growth=1.3, max_rounds=6, rng: Generator):
+    """Global oversample → remove overlaps → global thin to exactly n_points."""
+    rng = _require_gen(rng)
+    n_SQs = len(sq_pars_N)
+    if n_points <= 0 or n_SQs == 0:
+        return np.empty((0,4), dtype=float)
+
+    k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_SQs))))
+    for _ in range(max_rounds):
+        all_pts = []
+        for i in range(n_SQs):
+            pts = sample_SQ_naive(sq_pars_N[i], k, k)  # (k*k, 3)
+            for j in range(n_SQs):
+                if j != i:
+                    pts = remove_points_inside_SQ(pts, sq_pars_N[j])
+            if pts.size:
+                ids = np.full((pts.shape[0], 1), i)
+                all_pts.append(np.concatenate([pts, ids], axis=1))
+        if not all_pts:
+            k = int(np.ceil(k * growth)); continue
+
+        survivors = np.concatenate(all_pts, axis=0)
+        M = survivors.shape[0]
+        if M >= n_points:
+            idx = rng.choice(M, n_points, replace=False)
+            return survivors[idx]
+        k = int(np.ceil(k * growth))
+    raise ValueError(f"Could not reach {n_points} points after {max_rounds} rounds; last count={M}, k={k}")
+
+def gen_random_SQs_points(n_sqs: int, n_points: int, *, rng: Generator, alpha=2.0, growth=1.3, max_rounds=6):
+    """Create n_sqs random SQs with get_random_SQ_pars(rng=child_rng) and sample exactly n_points total."""
+    rng = _require_gen(rng)
+    # derive independent child generators deterministically from the parent
+    child_seeds = rng.integers(0, 2**32 - 1, size=n_sqs, dtype=np.uint32)
+    sq_pars_list = [get_random_SQ_pars(np.random.default_rng(int(s))) for s in child_seeds]
+    points = sample_N_SQs_naive_exactN(
+        sq_pars_list, n_points, alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng
+    )
+    return points, sq_pars_list
