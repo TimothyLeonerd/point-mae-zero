@@ -3,6 +3,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as Rot
 from numpy.random import Generator
+import os, io, json, math, time, pathlib
+from typing import Dict, Tuple, List
+import lmdb
 
 def sample_SQ_naive(sq_pars, n_theta, n_phi):
     assert(len(sq_pars) == 5 or len(sq_pars) == 11)
@@ -269,13 +272,13 @@ def get_random_SQ_pars(rng: Generator, centered: bool=False):
     U = rng.uniform
 
     a_x = U(0.1, 1.0); a_y = U(0.1, 1.0); a_z = U(0.1, 3.0)
-    eps_1 = U(0.0, 3.0); eps_2 = U(0.0, 3.0)
+    eps_1 = U(0.3, 3.0); eps_2 = U(0.3, 3.0)
     euler_x = U(0.0, 2*np.pi); euler_y = U(0.0, 2*np.pi); euler_z = U(0.0, 2*np.pi)
 
     if centered:
         t_x = t_y = t_z = 0.0
     else:
-        t_x = U(-0.5, 0.5); t_y = U(-0.5, 0.5); t_z = U(-0.5, 0.5)
+        t_x = U(-1.0, 1.0); t_y = U(-1.0, 1.0); t_z = U(1.0, 1.0)
 
     return [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
 
@@ -328,3 +331,249 @@ def gen_random_SQs_points(n_sqs: int, n_points: int, *, rng: Generator, alpha=2.
         sq_pars_list, n_points, alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng
     )
     return points, sq_pars_list
+
+def _ensure_dir(p: pathlib.Path):
+    p.mkdir(parents=True, exist_ok=True)
+
+def _np_serialize_to_bytes(obj: object) -> bytes:
+    buf = io.BytesIO()
+    np.save(buf, obj, allow_pickle=True)
+    return buf.getvalue()
+
+def _estimate_item_bytes(n_points: int, mode: str, dtype_points: np.dtype) -> int:
+    # very conservative + overhead padding
+    dt = np.dtype(dtype_points)
+    if mode == "xyz_only":
+        core = n_points * 3 * dt.itemsize
+        return int(core * 1.35)  # ~35% padding for key/val overhead in LMDB
+    elif mode == "enriched":
+        # points + labels(int64) + small params list + header/np.save overhead
+        core = (n_points * 3 * dt.itemsize) + (n_points * np.dtype(np.int64).itemsize) + 512
+        return int(core * 1.35)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
+
+def _items_per_shard(max_shard_bytes: int, n_points: int, mode: str, dtype_points: np.dtype, safety: float=0.9) -> int:
+    usable = int(max_shard_bytes * safety)
+    per = _estimate_item_bytes(n_points, mode, dtype_points)
+    k = max(1, usable // max(per, 1))
+    # keep it round-ish for nicer shard sizes
+    if k > 10000:
+        k = (k // 1000) * 1000
+    elif k > 1000:
+        k = (k // 100) * 100
+    return max(1, int(k))
+
+def _child_generators(parent: Generator, n: int) -> List[Generator]:
+    seeds = parent.integers(0, 2**32 - 1, size=n, dtype=np.uint32)
+    return [np.random.default_rng(int(s)) for s in seeds]
+
+def _make_cloud_once(n_SQ_max: int, n_points: int, *, rng: Generator,
+                     alpha=2.0, growth=1.3, max_rounds=6) -> Tuple[np.ndarray, List[List[float]]]:
+    """One attempt: returns (points_with_ids Nx4 float64, sq_pars_list) or raises ValueError if cannot reach N."""
+    rng = _require_gen(rng)
+    # number of Sqs: Uniform{1..n_SQ_max}
+    n_sqs = int(rng.integers(1, n_SQ_max + 1))
+    gens = _child_generators(rng, n_sqs)
+    sq_pars_list = [get_random_SQ_pars(g) for g in gens]
+    pts = sample_N_SQs_naive_exactN(sq_pars_list, n_points, alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng)
+    return pts, sq_pars_list
+
+
+# ---- NPY writer (batched) ----
+def _write_npy_batch(batch: List[Tuple[np.ndarray, List[List[float]]]],
+                     out_dir: pathlib.Path, start_idx: int, mode: str, dtype_points: np.dtype):
+    _ensure_dir(out_dir)
+    idx = start_idx
+    for points4, params in batch:
+        if mode == "xyz_only":
+            arr = points4[:, :3].astype(dtype_points, copy=False)
+            np.save(out_dir / f"sample_{idx:08d}.npy", arr)
+        else:
+            xyz = points4[:, :3].astype(dtype_points, copy=False)
+            labels = points4[:, 3].astype(np.int64, copy=False)
+            obj = {'points': xyz, 'labels': labels, 'sq_params': params}
+            np.save(out_dir / f"sample_{idx:08d}.npy", obj, allow_pickle=True)
+        idx += 1
+
+
+# ---- LMDB shard writer ----
+class _ShardWriter:
+    def __init__(self, shard_dir: pathlib.Path, map_size: int):
+        if lmdb is None:
+            raise RuntimeError("lmdb package not available; install it or use storage='npy'")
+        _ensure_dir(shard_dir)
+        self.shard_dir = shard_dir
+        self.env = lmdb.open(
+            str(shard_dir),
+            map_size=map_size,
+            subdir=True,
+            max_dbs=1,
+            lock=True,
+            writemap=True,
+            map_async=False,
+            metasync=False,
+            sync=False,
+        )
+        self.txn = self.env.begin(write=True)
+        self.count = 0
+        self.bytes = 0
+        self.shapes: Dict[str, int] = {}
+        self.dtypes: Dict[str, int] = {}
+        self.t0 = time.time()
+
+    def put(self, key: str, value_bytes: bytes, *, pts_shape: Tuple[int, int], dtype_points: str):
+        self.txn.put(key.encode('utf-8'), value_bytes)
+        self.count += 1
+        self.bytes += len(value_bytes) + len(key)
+        self.shapes[str(pts_shape)] = self.shapes.get(str(pts_shape), 0) + 1
+        self.dtypes[dtype_points] = self.dtypes.get(dtype_points, 0) + 1
+
+    def commit(self):
+        self.txn.commit()
+        self.txn = self.env.begin(write=True)
+
+    def close_with_metadata(self):
+        duration = time.time() - self.t0
+        meta = {
+            "manifest": str(self.shard_dir / "data.mdb"),
+            "items": self.count,
+            "written": self.count,
+            "bytes": self.bytes,
+            "shapes": self.shapes,
+            "dtypes": self.dtypes,
+            "duration_sec": round(duration, 2)
+        }
+        with open(self.shard_dir / "metadata.json", "w") as f:
+            json.dump(meta, f, indent=2)
+        self.txn.commit()
+        self.env.sync()
+        self.env.close()
+
+
+def generate_pointzero_like_dataset(
+    out_root: str,
+    n_clouds: int,
+    n_SQ_max: int,
+    *,
+    split: str = "train",
+    n_points_per_cloud: int = 8192,
+    storage: str = "lmdb",                 # "lmdb" or "npy"
+    mode: str = "enriched",                # "enriched" or "xyz_only"
+    dtype_points: np.dtype = np.float32,
+    lmdb_shard_bytes: int = (8 << 30),     # 8 GB
+    lmdb_safety: float = 0.90,             # keep 10% headroom
+    lmdb_txn_batch: int = 100,             # commit interval
+    npy_batch_size: int = 200,             # RAM batch before writing
+    alpha: float = 2.0, growth: float = 1.3, max_rounds: int = 6,
+    rng: Generator = None
+) -> Dict[str, object]:
+    """
+    Generate exactly `n_clouds` clouds with `n_points_per_cloud` points each.
+    - storage="lmdb": write shards under {out_root}/lmdb_shards/{split}/shard_xxxxx/
+    - storage="npy" : write files under {out_root}/npy/{split}/
+    - mode="enriched": save points+labels+sq_params
+    - mode="xyz_only": save only (N,3) arrays
+    Returns a summary dict (counts, skips, paths).
+    """
+    rng = _require_gen(rng)
+
+    out_root = pathlib.Path(out_root)
+    if storage == "lmdb":
+        base_dir = out_root / "lmdb_shards" / split
+    elif storage == "npy":
+        base_dir = out_root / "npy" / split
+    else:
+        raise ValueError("storage must be 'lmdb' or 'npy'")
+    _ensure_dir(base_dir)
+
+    # LMDB: compute items per shard
+    per_item = _estimate_item_bytes(n_points_per_cloud, mode, np.dtype(dtype_points))
+    items_per = _items_per_shard(lmdb_shard_bytes, n_points_per_cloud, mode, np.dtype(dtype_points), lmdb_safety)
+
+    summary = {
+        "out_dir": str(base_dir),
+        "storage": storage,
+        "mode": mode,
+        "dtype_points": str(np.dtype(dtype_points)),
+        "n_points_per_cloud": n_points_per_cloud,
+        "target_clouds": n_clouds,
+        "saved_clouds": 0,
+        "skipped_attempts": 0,
+        "est_bytes_per_item": per_item,
+        "items_per_shard": items_per,
+        "shards_written": 0
+    }
+
+    if storage == "lmdb":
+        shard_idx = 0
+        written_in_shard = 0
+        shard_dir = base_dir / f"shard_{shard_idx:05d}"
+        writer = _ShardWriter(shard_dir, map_size=lmdb_shard_bytes)
+        summary["shards_written"] = 1
+
+    batch_mem: List[Tuple[np.ndarray, List[List[float]]]] = []  # for NPY mode
+    next_idx = 0
+
+    while summary["saved_clouds"] < n_clouds:
+        try:
+            points4, params = _make_cloud_once(n_SQ_max, n_points_per_cloud, rng=rng,
+                                               alpha=alpha, growth=growth, max_rounds=max_rounds)
+        except ValueError:
+            summary["skipped_attempts"] += 1
+            continue
+
+        if storage == "lmdb":
+            # build key and value
+            key = f"{split}:{next_idx:08d}"
+            if mode == "xyz_only":
+                val = _np_serialize_to_bytes(points4[:, :3].astype(dtype_points, copy=False))
+                shp = (n_points_per_cloud, 3)
+                dt_name = str(np.dtype(dtype_points))
+            else:
+                xyz = points4[:, :3].astype(dtype_points, copy=False)
+                labels = points4[:, 3].astype(np.int64, copy=False)
+                obj = {'points': xyz, 'labels': labels, 'sq_params': params}
+                val = _np_serialize_to_bytes(obj)
+                shp = (n_points_per_cloud, 3)
+                dt_name = str(np.dtype(dtype_points))
+
+            writer.put(key, val, pts_shape=shp, dtype_points=dt_name)
+            written_in_shard += 1
+            summary["saved_clouds"] += 1
+            next_idx += 1
+
+            # commit batched
+            if (written_in_shard % lmdb_txn_batch) == 0:
+                writer.commit()
+
+            # rotate shard if full
+            if written_in_shard >= items_per:
+                writer.close_with_metadata()
+                shard_idx += 1
+                shard_dir = base_dir / f"shard_{shard_idx:05d}"
+                writer = _ShardWriter(shard_dir, map_size=lmdb_shard_bytes)
+                summary["shards_written"] += 1
+                written_in_shard = 0
+
+        else:  # storage == "npy"
+            batch_mem.append((points4, params))
+            summary["saved_clouds"] += 1
+            next_idx += 1
+
+            if len(batch_mem) >= npy_batch_size:
+                _write_npy_batch(batch_mem, base_dir, start_idx=next_idx - len(batch_mem),
+                                 mode=mode, dtype_points=np.dtype(dtype_points))
+                batch_mem.clear()
+
+    # flush tails
+    if storage == "lmdb":
+        writer.commit()
+        writer.close_with_metadata()
+    else:
+        if batch_mem:
+            _write_npy_batch(batch_mem, base_dir, start_idx=next_idx - len(batch_mem),
+                             mode=mode, dtype_points=np.dtype(dtype_points))
+            batch_mem.clear()
+
+    return summary
