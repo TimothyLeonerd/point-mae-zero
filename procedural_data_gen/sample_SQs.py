@@ -669,7 +669,7 @@ def make_cloud_profiled(n_SQ_max, n_points, *, rng, alpha=2.0, growth=1.3, max_r
                                 if vec_removal:
                                     pts = remove_points_inside_SQ_vec(pts, sq_pars[j])
                                 else:
-                                    pts = remove_points_inside_SQ_vec(pts, sq_pars[j])
+                                    pts = remove_points_inside_SQ(pts, sq_pars[j])
                     with prof.section("label_concat"):
                         if pts.size:
                             ids = np.full((pts.shape[0], 1), i)
