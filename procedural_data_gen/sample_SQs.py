@@ -7,64 +7,78 @@ import os, io, json, math, time, pathlib
 from typing import Dict, Tuple, List
 import lmdb
 
+# --- cache for trig grids so we don't re-mesh every call with same (n_theta, n_phi) ---
+_TRIG_CACHE = {}  # key: (n_theta, n_phi) -> dict with theta, phi, ct, st, cp, sp
+
+def _get_trig_grid(n_theta: int, n_phi: int):
+    key = (n_theta, n_phi)
+    c = _TRIG_CACHE.get(key)
+    if c is not None:
+        return c["ct"], c["st"], c["cp"], c["sp"]
+
+    # theta starts at -pi/2 + pi/(2*n_theta), step d_theta = pi/n_theta, i=0..n_theta-1
+    # phi   starts at -pi   + pi/(  n_phi), step d_phi   = 2pi/n_phi, j=0..n_phi-1
+    d_theta = np.pi / n_theta
+    d_phi   = 2.0 * np.pi / n_phi
+    theta0  = -np.pi/2.0 + np.pi/(2.0 * n_theta)
+    phi0    = -np.pi     + np.pi/   (1.0 * n_phi)
+
+    theta = theta0 + d_theta * np.arange(n_theta)[:, None]   # (n_theta, 1)
+    phi   = phi0   + d_phi   * np.arange(n_phi)[None, :]     # (1, n_phi)
+
+    ct, st = np.cos(theta), np.sin(theta)  # (n_theta,1)
+    cp, sp = np.cos(phi),   np.sin(phi)    # (1,n_phi)
+
+    _TRIG_CACHE[key] = {"ct": ct, "st": st, "cp": cp, "sp": sp}
+    return ct, st, cp, sp
+
 def sample_SQ_naive(sq_pars, n_theta, n_phi):
-    assert(len(sq_pars) == 5 or len(sq_pars) == 11)
-    assert n_theta > 0 and n_phi > 0, "n_theta and n_phi must be positive"
+    """
+    Vectorized (parallel) sampling.
+    Returns (n_theta*n_phi, 3) float array.
+    """
+    assert (len(sq_pars) in (5, 11))
+    assert n_theta > 0 and n_phi > 0
 
-    if(len(sq_pars) == 5):
+    if len(sq_pars) == 5:
         a_x, a_y, a_z, eps_1, eps_2 = sq_pars
-        euler = None # xyz
+        euler = None
         t = None
-    elif(len(sq_pars) == 11):
-        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[0:5]
+    else:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[:5]
         euler = sq_pars[5:8]
-        t = sq_pars[8:11]
+        t     = sq_pars[8:11]
 
-    points = np.zeros((n_theta * n_phi, 3), dtype=float) # allocate array
+    # trig grids (broadcastable to (n_theta, n_phi))
+    ct, st, cp, sp = _get_trig_grid(n_theta, n_phi)
 
-    d_theta = np.pi / n_theta # stepsize for theta
-    d_phi = 2.0 * np.pi / n_phi # stepsize for phi
+    # sign * |.|^eps, done fully vectorized
+    # shapes: ct/st => (n_theta,1), cp/sp => (1,n_phi), broadcasts to (n_theta,n_phi)
+    cx = np.sign(ct) * np.abs(ct) ** eps_1
+    sx = np.sign(st) * np.abs(st) ** eps_1
+    c2 = np.sign(cp) * np.abs(cp) ** eps_2
+    s2 = np.sign(sp) * np.abs(sp) ** eps_2
 
-    # starting theta. Small offset from -pi/2 avoids poles 
-    theta = -np.pi/2.0 + np.pi/(2.0 * n_theta)
+    X = a_x * (cx * c2)   # (n_theta, n_phi)
+    Y = a_y * (cx * s2)
+    Z = a_z * np.broadcast_to(sx, (n_theta, n_phi))
 
-    idx = 0 # array index
-
-    for i in range(0, n_theta):
-
-        phi = -np.pi + np.pi/n_phi
-        for j in range(0, n_phi):
-
-            # intermediate variables
-            ct = np.cos(theta)
-            cp = np.cos(phi)
-
-            st = np.sin(theta)
-            sp = np.sin(phi)
-
-            # Calc point coord
-            x = a_x * np.sign(ct) * np.abs(ct)**eps_1 * np.sign(cp) * np.abs(cp)**eps_2
-            y = a_y * np.sign(ct) * np.abs(ct)**eps_1 * np.sign(sp) * np.abs(sp)**eps_2
-            z = a_z * np.sign(st) * np.abs(st)**eps_1
-
-            
-            points[idx] = np.array([x,y,z], dtype=float) # Save to array
-            
-            phi += d_phi # increment phi (East-West)
-            idx += 1
-
-        theta += d_theta # increment theta (North-South)
+    # flatten in the SAME order as the nested loops: i over theta outer, j over phi inner
+    P = np.empty((n_theta * n_phi, 3), dtype=float)
+    P[:, 0] = X.reshape(-1)
+    P[:, 1] = Y.reshape(-1)
+    P[:, 2] = Z.reshape(-1)
 
     # optional rotation
     if euler is not None:
         R = Rot.from_euler('xyz', euler).as_matrix()
-        points = points @ R.T
+        P = P @ R.T
 
     # optional translation
     if t is not None:
-        points = points + np.asarray(t)
+        P = P + np.asarray(t, dtype=float)
 
-    return points
+    return P
 
 
 def set_equal_axes_quadrant_aware(ax, points):
@@ -148,37 +162,6 @@ def read_npy(path):
         if obj.ndim == 2 and obj.shape[1] == 3:
             return obj.astype(np.float32, copy=False), None
     raise ValueError("Unsupported .npy content (expected dict or (N,3) array).")
-
-
-
-def point_is_inside_SQ(point, sq_pars):
-    assert(len(sq_pars) == 5 or len(sq_pars) == 11)
-
-    if(len(sq_pars) == 5):
-        a_x, a_y, a_z, eps_1, eps_2 = sq_pars
-        euler = None # xyz
-        t = None
-    elif(len(sq_pars) == 11):
-        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[0:5]
-        euler = sq_pars[5:8]
-        R_inv = Rot.from_euler('xyz', euler).inv().as_matrix()
-        t = sq_pars[8:11]
-
-        # Inv. rot. and translation that was applied
-        point = R_inv @ (point - t)
-
-    # ToDo: This only works with np.abs (heuristically tested)
-    # Without it, only one quadrant correctly detected. Why?
-    x = np.abs(point[0])
-    y = np.abs(point[1])
-    z = np.abs(point[2])
-
-    #a_x, a_y, a_z, eps_1, eps_2 = sq_pars
-
-    # implicit Superellipsoid function
-    f = ( (x/a_x)**(2.0/eps_2) + (y/a_y)**(2.0/eps_2) )**(eps_2/eps_1) + (z/a_z)**(2.0/eps_1)
-
-    return f < 1.0 # if f < 1 -> point is inside of SQ
 
 def remove_points_inside_SQ(points, sq_pars):
     """
@@ -306,7 +289,7 @@ def get_random_SQ_pars(rng: Generator, centered: bool=False):
     if centered:
         t_x = t_y = t_z = 0.0
     else:
-        t_x = U(-1.0, 1.0); t_y = U(-1.0, 1.0); t_z = U(1.0, 1.0)
+        t_x = U(-1.0, 1.0); t_y = U(-1.0, 1.0); t_z = U(-1.0, 1.0)
 
     return [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
 
@@ -331,6 +314,7 @@ def sample_N_SQs_naive_exactN(sq_pars_N, n_points: int, *, alpha=2.0, growth=1.3
     for _ in range(max_rounds):
         all_pts = []
         for i in range(n_SQs):
+            print("here")
             pts = sample_SQ_naive(sq_pars_N[i], k, k)  # (k*k, 3)
             for j in range(n_SQs):
                 if j != i:
