@@ -179,6 +179,7 @@ def point_is_inside_SQ(point, sq_pars):
     f = ( (x/a_x)**(2.0/eps_2) + (y/a_y)**(2.0/eps_2) )**(eps_2/eps_1) + (z/a_z)**(2.0/eps_1)
 
     return f < 1.0 # if f < 1 -> point is inside of SQ
+
 def remove_points_inside_SQ(points, sq_pars):
     indices = []
 
@@ -189,6 +190,47 @@ def remove_points_inside_SQ(points, sq_pars):
             indices.append(i)
 
     return np.delete(points, indices, axis=0)
+
+def remove_points_inside_SQ_vec(points, sq_pars):
+    """
+    Vectorized version: removes all rows of `points` that are inside the given superquadric.
+    Keeps exactly the same semantics as your scalar version, but much faster.
+    """
+    print("in vec")
+    pts = np.asarray(points, dtype=float)  # preserve original dtype/shape at return
+    if pts.ndim != 2 or pts.shape[1] != 3:
+        raise ValueError(f"`points` must be (N,3); got {pts.shape}")
+
+    # --- unpack params & optional inverse transform (once) ---
+    if len(sq_pars) == 5:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+        P = pts  # no transform
+    elif len(sq_pars) == 11:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[:5]
+        euler = sq_pars[5:8]
+        t = np.asarray(sq_pars[8:11], dtype=float)
+        R_inv = Rot.from_euler('xyz', euler).inv().as_matrix()
+        # inverse of (R, t): x' = R^{-1}(x - t)
+        P = (pts - t) @ R_inv.T
+    else:
+        raise ValueError("sq_pars must have length 5 or 11")
+
+    # --- implicit function (vectorized) ---
+
+    X = np.abs(P[:, 0])
+    Y = np.abs(P[:, 1])
+    Z = np.abs(P[:, 2])
+
+    # f = ( (|x|/a_x)^(2/eps2) + (|y|/a_y)^(2/eps2) )^(eps2/eps1) + (|z|/a_z)^(2/eps1)
+    # compute in float64 for stability, then filter
+    rx = (X / a_x) ** (2.0 / eps_2)
+    ry = (Y / a_y) ** (2.0 / eps_2)
+    rxy = (rx + ry) ** (eps_2 / eps_1)
+    rz = (Z / a_z) ** (2.0 / eps_1)
+    f = rxy + rz
+
+    inside = f < 1.0
+    return pts[~inside]
 
     
 def sample_two_SQ_naive(sq_pars_1st, sq_pars_2nd, n_theta, n_phi):
@@ -577,3 +619,126 @@ def generate_pointzero_like_dataset(
             batch_mem.clear()
 
     return summary
+
+from time import perf_counter
+from contextlib import contextmanager
+from collections import defaultdict
+
+class Prof:
+    def __init__(self):
+        self.t = defaultdict(float)   # total time per section
+        self.n = defaultdict(int)     # calls per section
+
+    @contextmanager
+    def section(self, name: str):
+        t0 = perf_counter()
+        try:
+            yield
+        finally:
+            self.t[name] += perf_counter() - t0
+            self.n[name] += 1
+
+    def report(self, top=None):
+        items = sorted(self.t.items(), key=lambda kv: kv[1], reverse=True)
+        if top is not None: items = items[:top]
+        for k, v in items:
+            calls = self.n[k]
+            avg = (v / calls) if calls else 0.0
+            print(f"{k:24s} total={v*1000:8.1f} ms  calls={calls:6d}  avg={avg*1000:7.2f} ms")
+
+def make_cloud_profiled(n_SQ_max, n_points, *, rng, alpha=2.0, growth=1.3, max_rounds=6, vec_removal=True):
+    prof = Prof()
+    with prof.section("total_make_cloud"):
+        with prof.section("draw_n_sqs"):
+            n_sqs = int(rng.integers(1, n_SQ_max + 1))
+        with prof.section("draw_params"):
+            from numpy.random import default_rng
+            child_seeds = rng.integers(0, 2**32 - 1, size=n_sqs, dtype=np.uint32)
+            sq_pars = [get_random_SQ_pars(np.random.default_rng(int(s))) for s in child_seeds]
+        # mirror your exact-N routine but time its parts:
+        k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_sqs))))
+        for round_id in range(max_rounds):
+            all_pts = []
+            with prof.section("round_loop"):
+                for i in range(n_sqs):
+                    with prof.section("sample_one_SQ"):
+                        pts = sample_SQ_naive(sq_pars[i], k, k)  # (k*k,3)
+                    with prof.section("overlap_removal"):
+                        for j in range(n_sqs):
+                            if j != i:
+                                if vec_removal:
+                                    pts = remove_points_inside_SQ_vec(pts, sq_pars[j])
+                                else:
+                                    pts = remove_points_inside_SQ_vec(pts, sq_pars[j])
+                    with prof.section("label_concat"):
+                        if pts.size:
+                            ids = np.full((pts.shape[0], 1), i)
+                            all_pts.append(np.concatenate([pts, ids], axis=1))
+            if not all_pts:
+                k = int(np.ceil(k * growth)); continue
+            with prof.section("concat_all"):
+                survivors = np.concatenate(all_pts, axis=0)
+            M = survivors.shape[0]
+            if M >= n_points:
+                with prof.section("global_subsample"):
+                    idx = rng.choice(M, n_points, replace=False)
+                    out = survivors[idx]
+                prof.t["rounds"] = prof.t.get("rounds", 0) + (round_id + 1)
+                return out, sq_pars, prof
+            k = int(np.ceil(k * growth))
+        raise ValueError("could not reach target points")
+
+def _first_round_survivors(sq_pars_list, k, remove_fn):
+    all_pts = []
+    n_sqs = len(sq_pars_list)
+    for i in range(n_sqs):
+        pts = sample_SQ_naive(sq_pars_list[i], k, k)  # (k*k,3)
+        for j in range(n_sqs):
+            if j != i:
+                pts = remove_fn(pts, sq_pars_list[j])
+                if pts.size == 0:
+                    break
+        if pts.size:
+            ids = np.full((pts.shape[0], 1), i)
+            all_pts.append(np.concatenate([pts, ids], axis=1))
+    if not all_pts:
+        return np.empty((0, 4), dtype=float)
+    return np.concatenate(all_pts, axis=0)
+
+def compare_scalar_vs_vector(n_trials=20, n_SQ_max=9, n_points=8192, alpha=2.0, seed=42):
+    """
+    For each trial:
+      1) draw n_sqs and params deterministically,
+      2) set k from the same alpha formula,
+      3) compute survivors once with scalar removal, once with vector removal,
+      4) compare bit-for-bit.
+    """
+    rng = np.random.default_rng(seed)
+    for t in range(n_trials):
+        n_sqs = int(rng.integers(1, n_SQ_max + 1))
+        # derive per-SQ child rngs and params (same for both paths)
+        child_seeds = rng.integers(0, 2**32 - 1, size=n_sqs, dtype=np.uint32)
+        sqs = [get_random_SQ_pars(np.random.default_rng(int(s))) for s in child_seeds]
+
+        # same grid size k as your exact-N starter (first round)
+        k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_sqs))))
+
+        A = _first_round_survivors(sqs, k, remove_points_inside_SQ)      # scalar
+        B = _first_round_survivors(sqs, k, remove_points_inside_SQ_vec)  # vector
+
+        if A.shape != B.shape or not np.array_equal(A, B):
+            # print a concise diff and bail
+            print(f"[Trial {t}] Mismatch!")
+            print("  shapes:", A.shape, B.shape)
+            if A.shape == B.shape:
+                max_abs = np.max(np.abs(A - B))
+                print("  max|Δ|:", max_abs)
+                # show first few differing rows
+                diff_mask = np.any(A != B, axis=1)
+                idx = np.where(diff_mask)[0][:5]
+                print("  first differing rows (A vs B):")
+                for i in idx:
+                    print("   A:", A[i], "   B:", B[i])
+            return False
+    print(f"All {n_trials} trials matched bit-for-bit ✅")
+    return True
