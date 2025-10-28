@@ -181,22 +181,9 @@ def point_is_inside_SQ(point, sq_pars):
     return f < 1.0 # if f < 1 -> point is inside of SQ
 
 def remove_points_inside_SQ(points, sq_pars):
-    indices = []
-
-    n = points.shape[0]
-
-    for i in range(n):
-        if(point_is_inside_SQ(points[i], sq_pars)):
-            indices.append(i)
-
-    return np.delete(points, indices, axis=0)
-
-def remove_points_inside_SQ_vec(points, sq_pars):
     """
-    Vectorized version: removes all rows of `points` that are inside the given superquadric.
-    Keeps exactly the same semantics as your scalar version, but much faster.
+    Removes all points that are within SQ defined by sq_pars
     """
-    print("in vec")
     pts = np.asarray(points, dtype=float)  # preserve original dtype/shape at return
     if pts.ndim != 2 or pts.shape[1] != 3:
         raise ValueError(f"`points` must be (N,3); got {pts.shape}")
@@ -215,20 +202,19 @@ def remove_points_inside_SQ_vec(points, sq_pars):
     else:
         raise ValueError("sq_pars must have length 5 or 11")
 
-    # --- implicit function (vectorized) ---
-
     X = np.abs(P[:, 0])
     Y = np.abs(P[:, 1])
     Z = np.abs(P[:, 2])
 
+    # --- implicit function (vectorized) ---
     # f = ( (|x|/a_x)^(2/eps2) + (|y|/a_y)^(2/eps2) )^(eps2/eps1) + (|z|/a_z)^(2/eps1)
-    # compute in float64 for stability, then filter
     rx = (X / a_x) ** (2.0 / eps_2)
     ry = (Y / a_y) ** (2.0 / eps_2)
     rxy = (rx + ry) ** (eps_2 / eps_1)
     rz = (Z / a_z) ** (2.0 / eps_1)
     f = rxy + rz
 
+    # filter if inside
     inside = f < 1.0
     return pts[~inside]
 
@@ -646,7 +632,7 @@ class Prof:
             avg = (v / calls) if calls else 0.0
             print(f"{k:24s} total={v*1000:8.1f} ms  calls={calls:6d}  avg={avg*1000:7.2f} ms")
 
-def make_cloud_profiled(n_SQ_max, n_points, *, rng, alpha=2.0, growth=1.3, max_rounds=6, vec_removal=True):
+def make_cloud_profiled(n_SQ_max, n_points, *, rng, alpha=2.0, growth=1.3, max_rounds=6):
     prof = Prof()
     with prof.section("total_make_cloud"):
         with prof.section("draw_n_sqs"):
@@ -666,10 +652,7 @@ def make_cloud_profiled(n_SQ_max, n_points, *, rng, alpha=2.0, growth=1.3, max_r
                     with prof.section("overlap_removal"):
                         for j in range(n_sqs):
                             if j != i:
-                                if vec_removal:
-                                    pts = remove_points_inside_SQ_vec(pts, sq_pars[j])
-                                else:
-                                    pts = remove_points_inside_SQ(pts, sq_pars[j])
+                                pts = remove_points_inside_SQ(pts, sq_pars[j])
                     with prof.section("label_concat"):
                         if pts.size:
                             ids = np.full((pts.shape[0], 1), i)
@@ -687,58 +670,3 @@ def make_cloud_profiled(n_SQ_max, n_points, *, rng, alpha=2.0, growth=1.3, max_r
                 return out, sq_pars, prof
             k = int(np.ceil(k * growth))
         raise ValueError("could not reach target points")
-
-def _first_round_survivors(sq_pars_list, k, remove_fn):
-    all_pts = []
-    n_sqs = len(sq_pars_list)
-    for i in range(n_sqs):
-        pts = sample_SQ_naive(sq_pars_list[i], k, k)  # (k*k,3)
-        for j in range(n_sqs):
-            if j != i:
-                pts = remove_fn(pts, sq_pars_list[j])
-                if pts.size == 0:
-                    break
-        if pts.size:
-            ids = np.full((pts.shape[0], 1), i)
-            all_pts.append(np.concatenate([pts, ids], axis=1))
-    if not all_pts:
-        return np.empty((0, 4), dtype=float)
-    return np.concatenate(all_pts, axis=0)
-
-def compare_scalar_vs_vector(n_trials=20, n_SQ_max=9, n_points=8192, alpha=2.0, seed=42):
-    """
-    For each trial:
-      1) draw n_sqs and params deterministically,
-      2) set k from the same alpha formula,
-      3) compute survivors once with scalar removal, once with vector removal,
-      4) compare bit-for-bit.
-    """
-    rng = np.random.default_rng(seed)
-    for t in range(n_trials):
-        n_sqs = int(rng.integers(1, n_SQ_max + 1))
-        # derive per-SQ child rngs and params (same for both paths)
-        child_seeds = rng.integers(0, 2**32 - 1, size=n_sqs, dtype=np.uint32)
-        sqs = [get_random_SQ_pars(np.random.default_rng(int(s))) for s in child_seeds]
-
-        # same grid size k as your exact-N starter (first round)
-        k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_sqs))))
-
-        A = _first_round_survivors(sqs, k, remove_points_inside_SQ)      # scalar
-        B = _first_round_survivors(sqs, k, remove_points_inside_SQ_vec)  # vector
-
-        if A.shape != B.shape or not np.array_equal(A, B):
-            # print a concise diff and bail
-            print(f"[Trial {t}] Mismatch!")
-            print("  shapes:", A.shape, B.shape)
-            if A.shape == B.shape:
-                max_abs = np.max(np.abs(A - B))
-                print("  max|Δ|:", max_abs)
-                # show first few differing rows
-                diff_mask = np.any(A != B, axis=1)
-                idx = np.where(diff_mask)[0][:5]
-                print("  first differing rows (A vs B):")
-                for i in idx:
-                    print("   A:", A[i], "   B:", B[i])
-            return False
-    print(f"All {n_trials} trials matched bit-for-bit ✅")
-    return True
