@@ -201,7 +201,7 @@ def remove_points_inside_SQ(points, sq_pars):
     inside = f < 1.0
     return pts[~inside]
 
-    
+
 def sample_two_SQ_naive(sq_pars_1st, sq_pars_2nd, n_theta, n_phi):
     points_1st = sample_SQ_naive(sq_pars_1st, n_theta, n_phi)
     points_2nd = sample_SQ_naive(sq_pars_2nd, n_theta, n_phi)
@@ -314,7 +314,6 @@ def sample_N_SQs_naive_exactN(sq_pars_N, n_points: int, *, alpha=2.0, growth=1.3
     for _ in range(max_rounds):
         all_pts = []
         for i in range(n_SQs):
-            print("here")
             pts = sample_SQ_naive(sq_pars_N[i], k, k)  # (k*k, 3)
             for j in range(n_SQs):
                 if j != i:
@@ -463,43 +462,83 @@ class _ShardWriter:
         self.env.close()
 
 
+def _bytes_from_json(obj: dict) -> bytes:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+def _write_split_files_always(out_root: pathlib.Path, total: int, *,
+                              train_ratio: float = 1.0,
+                              shuffle: bool = True) -> Tuple[pathlib.Path, pathlib.Path]:
+    """
+    Always writes train.txt and test.txt (filenames fixed).
+    Lines contain LMDB keys of the form "train:{idx:08d}" (the *name* inside is arbitrary).
+    """
+    rng_local = np.random.default_rng(0)
+    indices = np.arange(total)
+    if shuffle:
+        rng_local.shuffle(indices)
+
+    n_train = int(round(train_ratio * total))
+    train_idx = indices[:n_train]
+    test_idx  = indices[n_train:]
+
+    # Keys must match what we actually wrote into LMDB (see main loop below)
+    train_keys = [f"train:{i:08d}" for i in train_idx]
+    test_keys  = [f"train:{i:08d}" for i in test_idx]   # same shards are fine; we split by keys
+
+    (out_root / "train.txt").write_text("\n".join(train_keys) + ("\n" if train_keys else ""))
+    (out_root / "test.txt").write_text("\n".join(test_keys)   + ("\n" if test_keys else ""))
+
+    return (out_root / "train.txt", out_root / "test.txt")
+
 def generate_pointzero_like_dataset(
     out_root: str,
     n_clouds: int,
     n_SQ_max: int,
     *,
-    split: str = "train",
+    dataset_name: str = "train",
     n_points_per_cloud: int = 8192,
     storage: str = "lmdb",                 # "lmdb" or "npy"
     mode: str = "enriched",                # "enriched" or "xyz_only"
     dtype_points: np.dtype = np.float32,
     lmdb_shard_bytes: int = (8 << 30),     # 8 GB
-    lmdb_safety: float = 0.90,             # keep 10% headroom
-    lmdb_txn_batch: int = 100,             # commit interval
-    npy_batch_size: int = 200,             # RAM batch before writing
+    lmdb_safety: float = 0.90,
+    lmdb_txn_batch: int = 100,
+    npy_batch_size: int = 200,
     alpha: float = 2.0, growth: float = 1.3, max_rounds: int = 6,
-    rng: Generator = None
+    rng: np.random.Generator = None,
+    train_ratio: float = 0.95,
+    shuffle_split: bool = True,
 ) -> Dict[str, object]:
     """
     Generate exactly `n_clouds` clouds with `n_points_per_cloud` points each.
-    - storage="lmdb": write shards under {out_root}/lmdb_shards/{split}/shard_xxxxx/
-    - storage="npy" : write files under {out_root}/npy/{split}/
-    - mode="enriched": save points+labels+sq_params
-    - mode="xyz_only": save only (N,3) arrays
-    Returns a summary dict (counts, skips, paths).
+
+    - storage="lmdb": write shards under {out_root}/{dataset_name}/shard_xxxxx/
+      IMPORTANT: We ALWAYS write split files named {out_root}/train.txt and {out_root}/test.txt
+                 that list keys of the form "train:{idx:08d}" so the repo's dataloader
+                 can use subset='train' / 'test' in YAML without any code changes.
+
+    - storage="npy": write files under {out_root}/npy/{dataset_name}/  (same semantics)
+
+    - mode="xyz_only": main LMDB/Npy value contains ONLY (N,3) float32 points.
+    - mode="enriched": main value is STILL (N,3) float32 points (loader-compatible),
+                       and we ALSO write sidecar keys:
+                         "<key>.labels"    -> (N,) int32 superquadric index per point
+                         "<key>.sq_params" -> (S,P) float32 per-cloud superquadric params
+                         "<key>.meta"      -> JSON bytes with shapes/dtypes
+
+    Returns a summary dict and writes train.txt / test.txt split files to `out_root`.
     """
     rng = _require_gen(rng)
 
     out_root = pathlib.Path(out_root)
     if storage == "lmdb":
-        base_dir = out_root / "lmdb_shards" / split
+        base_dir = out_root / dataset_name
     elif storage == "npy":
-        base_dir = out_root / "npy" / split
+        base_dir = out_root / dataset_name
     else:
         raise ValueError("storage must be 'lmdb' or 'npy'")
     _ensure_dir(base_dir)
 
-    # LMDB: compute items per shard
     per_item = _estimate_item_bytes(n_points_per_cloud, mode, np.dtype(dtype_points))
     items_per = _items_per_shard(lmdb_shard_bytes, n_points_per_cloud, mode, np.dtype(dtype_points), lmdb_safety)
 
@@ -514,9 +553,12 @@ def generate_pointzero_like_dataset(
         "skipped_attempts": 0,
         "est_bytes_per_item": per_item,
         "items_per_shard": items_per,
-        "shards_written": 0
+        "shards_written": 0,
+        "train_split": None,
+        "test_split": None,
     }
 
+    # --- LMDB writer init ---
     if storage == "lmdb":
         shard_idx = 0
         written_in_shard = 0
@@ -524,33 +566,39 @@ def generate_pointzero_like_dataset(
         writer = _ShardWriter(shard_dir, map_size=lmdb_shard_bytes)
         summary["shards_written"] = 1
 
-    batch_mem: List[Tuple[np.ndarray, List[List[float]]]] = []  # for NPY mode
+    batch_mem: List[Tuple[np.ndarray, List[List[float]]]] = []
     next_idx = 0
 
     while summary["saved_clouds"] < n_clouds:
         try:
-            points4, params = _make_cloud_once(n_SQ_max, n_points_per_cloud, rng=rng,
-                                               alpha=alpha, growth=growth, max_rounds=max_rounds)
+            # points4: (N,4) where last column are int labels (SQ index)
+            # params:  list-of-lists with per-SQ parameter vectors for this cloud
+            points4, params = _make_cloud_once(
+                n_SQ_max, n_points_per_cloud, rng=rng,
+                alpha=alpha, growth=growth, max_rounds=max_rounds
+            )
         except ValueError:
             summary["skipped_attempts"] += 1
             continue
 
         if storage == "lmdb":
-            # build key and value
-            key = f"{split}:{next_idx:08d}"
-            if mode == "xyz_only":
-                val = _np_serialize_to_bytes(points4[:, :3].astype(dtype_points, copy=False))
-                shp = (n_points_per_cloud, 3)
-                dt_name = str(np.dtype(dtype_points))
-            else:
-                xyz = points4[:, :3].astype(dtype_points, copy=False)
-                labels = points4[:, 3].astype(np.int64, copy=False)
-                obj = {'points': xyz, 'labels': labels, 'sq_params': params}
-                val = _np_serialize_to_bytes(obj)
-                shp = (n_points_per_cloud, 3)
-                dt_name = str(np.dtype(dtype_points))
+            # MAIN KEY (loader-compatible): (N,3) float32
+            key = f"train:{next_idx:08d}"  # fixed "train:" so split files can be train.txt/test.txt
+            xyz = points4[:, :3].astype(dtype_points, copy=False)
+            writer.put(key, _np_serialize_to_bytes(xyz),
+                       pts_shape=(n_points_per_cloud, 3),
+                       dtype_points=str(np.dtype(dtype_points)))
 
-            writer.put(key, val, pts_shape=shp, dtype_points=dt_name)
+            if mode == "enriched":
+                # SIDECARS
+                labels = points4[:, 3].astype(np.int32, copy=False)
+                sq_params = np.asarray(params, dtype=np.float32)  # (S,P)
+
+                writer.put(f"{key}.labels", _np_serialize_to_bytes(labels),
+                           pts_shape=(n_points_per_cloud,), dtype_points="int32")
+                writer.put(f"{key}.sq_params", _np_serialize_to_bytes(sq_params),
+                           pts_shape=tuple(sq_params.shape), dtype_points="float32")
+
             written_in_shard += 1
             summary["saved_clouds"] += 1
             next_idx += 1
@@ -588,6 +636,13 @@ def generate_pointzero_like_dataset(
                              mode=mode, dtype_points=np.dtype(dtype_points))
             batch_mem.clear()
 
+    # Write split files train.txt / test.txt
+    train_split, test_split = _write_split_files_always(
+        base_dir, total=summary["saved_clouds"],
+        train_ratio=train_ratio, shuffle=shuffle_split
+    )
+    summary["train_split"] = str(train_split)
+    summary["test_split"]  = str(test_split)
     return summary
 
 from time import perf_counter
