@@ -57,6 +57,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
     (train_sampler, train_dataloader), (_, test_dataloader),= builder.dataset_builder(args, config.dataset.train), \
                                                             builder.dataset_builder(args, config.dataset.val)
     (_, extra_train_dataloader)  = builder.dataset_builder(args, config.dataset.extra_train) if config.dataset.get('extra_train') else (None, None)
+
     # build model
     base_model = builder.model_builder(config.model)
     if args.use_gpu:
@@ -87,6 +88,8 @@ def run_net(args, config, train_writer=None, val_writer=None):
     else:
         print_log('Using Data parallel ...' , logger = logger)
         base_model = nn.DataParallel(base_model).cuda()
+
+    # Original from repo
     # optimizer & scheduler
     optimizer, scheduler = builder.build_opti_sche(base_model, config)
     
@@ -97,6 +100,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
     # training
     base_model.zero_grad()
     for epoch in range(start_epoch, config.max_epoch + 1):
+        metrics = validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger=logger)
         if args.distributed:
             train_sampler.set_epoch(epoch)
         base_model.train()
@@ -170,9 +174,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
                             ['%.4f' % l for l in losses.val()], optimizer.param_groups[0]['lr']), logger = logger)
         if isinstance(scheduler, list):
             for item in scheduler:
-                item.step(epoch)
+                item.step(epoch + 1)
         else:
-            scheduler.step(epoch)
+            scheduler.step(epoch + 1)
         epoch_end_time = time.time()
 
         if train_writer is not None:
@@ -181,16 +185,16 @@ def run_net(args, config, train_writer=None, val_writer=None):
             (epoch,  epoch_end_time - epoch_start_time, ['%.4f' % l for l in losses.avg()],
              optimizer.param_groups[0]['lr']), logger = logger)
 
-        # if epoch % args.val_freq == 0 and epoch != 0:
-        #     # Validate the current model
-        #     metrics = validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger=logger)
-        #
-        #     # Save ckeckpoints
-        #     if metrics.better_than(best_metrics):
-        #         best_metrics = metrics
-        #         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-best', args, logger = logger)
+        if epoch % args.val_freq == 0 and epoch != 0:
+            # Validate the current model
+            metrics = validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger=logger)
+        
+            # Save ckeckpoints
+            if metrics.better_than(best_metrics):
+                best_metrics = metrics
+                builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-best', args, logger = logger)
         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-last', args, logger = logger)
-        if epoch % 25 ==0 and epoch >=250:
+        if epoch % 1 ==0 and epoch >=0:
             builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, f'ckpt-epoch-{epoch:03d}', args,
                                     logger=logger)
         # if (config.max_epoch - epoch) < 10:
@@ -199,6 +203,53 @@ def run_net(args, config, train_writer=None, val_writer=None):
         train_writer.close()
     if val_writer is not None:
         val_writer.close()
+
+def _unwrap(model):
+    if isinstance(model, (nn.DataParallel, nn.parallel.DistributedDataParallel)):
+        return model.module
+    return model
+
+@torch.no_grad()
+def get_encoder_features_via_hook(model, points):
+    """
+    Runs a normal forward (which returns loss) but captures the encoder features
+    from MAE_encoder.norm via a temporary forward hook. Returns [B, D] features.
+    """
+    m = _unwrap(model)
+
+    # Ensure the path exists (it does in your checkpoints: MAE_encoder.norm.*)
+    try:
+        target_mod = m.MAE_encoder.norm
+    except AttributeError as e:
+        raise RuntimeError("Cannot locate m.MAE_encoder.norm to hook. "
+                           "Double-check model structure / names.") from e
+
+    bucket = {}
+
+    def _hook(_module, _inp, out):
+        # out is expected to be [B, N, D] tokens after final norm
+        bucket['x'] = out
+
+    handle = target_mod.register_forward_hook(_hook)
+    try:
+        # Trigger the usual forward (returns loss), but we just want the hook output.
+        _ = model(points, noaug=True)
+    finally:
+        handle.remove()
+
+    if 'x' not in bucket:
+        raise RuntimeError("Hook did not fire; MAE_encoder.norm wasn't reached in forward.")
+
+    feats = bucket['x']  # expect [B, N, D]
+    if feats.dim() == 3:
+        # If there is a CLS token, mean-pooling is robust; adjust if you prefer CLS-only.
+        feats = feats.mean(dim=1)  # [B, D]
+    elif feats.dim() == 2:
+        pass  # already [B, D]
+    else:
+        raise RuntimeError(f"Unexpected feature shape from hook: {feats.shape}")
+
+    return feats
 
 def validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger = None):
     print_log(f"[VALIDATION] Start validating epoch {epoch}", logger = logger)
@@ -218,7 +269,7 @@ def validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_wri
             points = misc.fps(points, npoints)
 
             assert points.size(1) == npoints
-            feature = base_model(points, noaug=True)
+            feature = get_encoder_features_via_hook(base_model, points).detach()
             target = label.view(-1)
 
             train_features.append(feature.detach())
@@ -230,12 +281,11 @@ def validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_wri
 
             points = misc.fps(points, npoints)
             assert points.size(1) == npoints
-            feature = base_model(points, noaug=True)
+            feature = get_encoder_features_via_hook(base_model, points).detach()
             target = label.view(-1)
 
             test_features.append(feature.detach())
             test_label.append(target.detach())
-
 
         train_features = torch.cat(train_features, dim=0)
         train_label = torch.cat(train_label, dim=0)
