@@ -67,9 +67,9 @@ def build_opti_sche(base_model, config):
         scheduler = CosineLRScheduler(optimizer,
                 t_initial=sche_config.kwargs.epochs,
                 t_mul=1,
-                lr_min=1e-6,
+                lr_min=sche_config.kwargs.lr_min,
                 decay_rate=0.1,
-                warmup_lr_init=1e-6,
+                warmup_lr_init=sche_config.kwargs.warmup_lr_init,
                 warmup_t=sche_config.kwargs.initial_epochs,
                 cycle_limit=1,
                 t_in_epochs=True)
