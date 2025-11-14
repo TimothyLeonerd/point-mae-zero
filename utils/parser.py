@@ -30,6 +30,12 @@ def get_args():
     # some args
     parser.add_argument('--exp_dir', type = str, default='./experiments', help = 'experiment path')
     parser.add_argument('--exp_name', type = str, default='default', help = 'experiment name')
+    parser.add_argument(
+        '--job-max-epochs',
+        type=int,
+        default=None,
+        help='If set, limit the number of epochs this *single* run executes (for chunked Slurm jobs).',
+    )
     parser.add_argument('--loss', type=str, default='cd1', help='loss name')
     parser.add_argument('--start_ckpts', type = str, default=None, help = 'reload used ckpt path')
     parser.add_argument('--ckpts', type = str, default=None, help = 'test used ckpt path')
