@@ -100,7 +100,6 @@ def run_net(args, config, train_writer=None, val_writer=None):
     # training
     base_model.zero_grad()
     for epoch in range(start_epoch, config.max_epoch + 1):
-        metrics = validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger=logger)
         if args.distributed:
             train_sampler.set_epoch(epoch)
         base_model.train()
