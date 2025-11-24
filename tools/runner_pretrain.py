@@ -96,10 +96,23 @@ def run_net(args, config, train_writer=None, val_writer=None):
     if args.resume:
         builder.resume_optimizer(optimizer, args, logger = logger)
 
+    # per-job epoch limit (for chunked Slurm runs)
+    job_max_epochs = getattr(args, "job_max_epochs", None)
+    epochs_done_this_job = 0
+
     # trainval
     # training
     base_model.zero_grad()
     for epoch in range(start_epoch, config.max_epoch + 1):
+
+        if job_max_epochs is not None and epochs_done_this_job >= job_max_epochs:
+            print_log(
+                f"[JOB LIMIT] Reached job_max_epochs={job_max_epochs}, "
+                f"stopping this run at epoch index {epoch}.",
+                logger=logger,
+            )
+            break
+
         if args.distributed:
             train_sampler.set_epoch(epoch)
         base_model.train()
@@ -186,7 +199,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
 
         if epoch % args.val_freq == 0 and epoch != 0:
             # Validate the current model
-            metrics = validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger=logger)
+            #metrics = validate(base_model, extra_train_dataloader, test_dataloader, epoch, val_writer, args, config, logger=logger)
         
             # Save ckeckpoints
             if metrics.better_than(best_metrics):
@@ -196,8 +209,9 @@ def run_net(args, config, train_writer=None, val_writer=None):
         if epoch % 1 ==0 and epoch >=0:
             builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, f'ckpt-epoch-{epoch:03d}', args,
                                     logger=logger)
-        # if (config.max_epoch - epoch) < 10:
-        #     builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, f'ckpt-epoch-{epoch:03d}', args, logger = logger)
+
+        epochs_done_this_job += 1
+
     if train_writer is not None:
         train_writer.close()
     if val_writer is not None:
