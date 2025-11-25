@@ -1,0 +1,38 @@
+# cfgs/pretrain_sq_sdf_pointmae.yaml
+
+optimizer: { type: AdamW, kwargs: { lr: 0.001, weight_decay: 0.05 } }
+scheduler: { type: CosLR, kwargs: { epochs: 300, initial_epochs: 6, lr_min: 0.000001, warmup_lr_init: 0.0001} }
+dataset:
+  train:
+    _base_: cfgs/dataset_configs/SuperquadricSDF.yaml
+    others:
+      subset: 'train'
+      npoints: 1024
+      bs: 2          # start small; M = GRID_RES^3
+  val:
+    _base_: cfgs/dataset_configs/SuperquadricSDF.yaml
+    others:
+      subset: 'test'  # or 'test', depending on your split files
+      npoints: 1024
+      bs: 2
+
+model:
+  NAME: Point_MAE_IAE
+
+  # PointTransformer-style backbone config
+  group_size: 32
+  num_group: 64
+  trans_dim: 384
+  depth: 12
+  drop_path_rate: 0.1
+  num_heads: 6
+  encoder_dims: 384
+
+  # Implicit SDF head
+  sdf_hidden_dim: 256
+  sdf_num_layers: 4
+  sdf_activation: 'relu'
+
+total_bs: 64             # used by build_opti_sche for lr scaling
+step_per_update: 1
+max_epoch: 100

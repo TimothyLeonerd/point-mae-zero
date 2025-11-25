@@ -4,3 +4,4 @@ import datasets.ZeroDataset
 import datasets.ModelNetDataset
 import datasets.ModelNetDatasetFewShot
 import datasets.ScanObjectNNDataset
+import datasets.SuperquadricSDFDataset

@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F   # <-- add this line
 import os
 import json
 from tools import builder
@@ -132,21 +133,41 @@ def run_net(args, config, train_writer=None, val_writer=None):
             n_itr = epoch * n_batches + idx
             
             data_time.update(time.time() - batch_start_time)
-            npoints = config.dataset.train.others.npoints
-            dataset_name = config.dataset.train._base_.NAME
-            if dataset_name == 'ShapeNet':
-                points = data.cuda()
-            elif dataset_name == 'ZeroVerse':
-                points = data.cuda()
-            elif dataset_name == 'ModelNet':
-                points = data[0].cuda()
-                points = misc.fps(points, npoints)   
-            else:
-                raise NotImplementedError(f'Train phase do not support {dataset_name}')
 
-            assert points.size(1) == npoints
-            points = train_transforms(points)
-            loss = base_model(points)
+            dataset_name = config.dataset.train._base_.NAME
+
+            if dataset_name == 'SuperquadricSDFDataset':
+                # Superquadric SDF branch:
+                #   data = (pts, query_points, sdf_vals, grid_shape)
+                pts, query_points, sdf_vals, grid_shape = data
+
+                pts = pts.cuda(non_blocking=True)             # (B, N, 3)
+                query_points = query_points.cuda(non_blocking=True)  # (B, M, 3)
+                sdf_vals = sdf_vals.cuda(non_blocking=True)   # (B, M)
+
+                # GT occupancy (inside or on surface = 1)
+                occ_targets = (sdf_vals <= 0.0).float()
+                #print(occ_targets.mean() * 100, "% occupied")
+
+                logits = base_model(pts, query_points)      # (B, M)
+                loss = F.binary_cross_entropy_with_logits(logits, occ_targets)
+            else:
+                # Original MAE-style branch (ShapeNet / ZeroVerse / ModelNet)
+                npoints = config.dataset.train.others.npoints
+
+                if dataset_name == 'ShapeNet':
+                    points = data.cuda()
+                elif dataset_name == 'ZeroVerse':
+                    points = data.cuda()
+                elif dataset_name == 'ModelNet':
+                    points = data[0].cuda()
+                    points = misc.fps(points, npoints)
+                else:
+                    raise NotImplementedError(f'Train phase do not support {dataset_name}')
+
+                assert points.size(1) == npoints
+                points = train_transforms(points)
+                loss = base_model(points)
             try:
                 loss.backward()
                 # print("Using one GPU")
@@ -206,7 +227,7 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 best_metrics = metrics
                 builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-best', args, logger = logger)
         builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, 'ckpt-last', args, logger = logger)
-        if epoch % 1 ==0 and epoch >=0:
+        if epoch % 10 == 0:
             builder.save_checkpoint(base_model, optimizer, epoch, metrics, best_metrics, f'ckpt-epoch-{epoch:03d}', args,
                                     logger=logger)
 
