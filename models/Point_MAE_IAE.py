@@ -160,6 +160,7 @@ class Point_MAE_IAE(nn.Module):
         x = x.reshape(B * M, -1)                                 # (B*M, latent_dim+3)
 
         sdf = self.sdf_head(x)                                   # (B*M, 1)
+        #sdf = torch.tanh(sdf)
         sdf = sdf.view(B, M)                                     # (B, M)
         return sdf
 

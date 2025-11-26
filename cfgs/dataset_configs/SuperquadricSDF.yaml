@@ -18,12 +18,15 @@ N_POINTS: 1024
 whole: false
 
 # SDF sampling options used in SuperquadricSDFDataset
-SQ_SDF_SAMPLING: grid         # current implementation
-SQ_SDF_GRID_RES: 16           # grid resolution → M = 32^3 query points
-
-SQ_SDF_SAMPLING: occ_balanced
-SQ_SDF_GRID_RES: 32        # still used to build the candidate grid
-SQ_SDF_N_QUERY: 4096       # or 8192, etc.
-SQ_OCC_BAND: 0.1           # "near surface" |f-1| < 0.1
-SQ_OCC_NEAR_FRACTION: 0.5  # 50% of inside / outside from near-surface band
-SQ_OCC_INSIDE_FRACTION: 0.5  # ~50% inside, 50% outside
+#SQ_SDF_SAMPLING: grid         # current implementation
+#SQ_SDF_GRID_RES: 16           # grid resolution → M = 32^3 query points
+SQ_SDF_SAMPLING: uniform_bbox
+#SQ_SDF_SAMPLING: occ_balanced
+# SQ_SDF_GRID_RES: 32        # still used to build the candidate grid
+SQ_SDF_N_QUERY: 8192       # or 8192, etc.
+# SQ_OCC_BAND: 0.1           # "near surface" |f-1| < 0.1
+# SQ_OCC_NEAR_FRACTION: 0.5  # 50% of inside / outside from near-surface band
+# SQ_OCC_INSIDE_FRACTION: 0.5  # ~50% inside, 50% outside
+# SQ_SDF_SAMPLING: surface_jitter
+# SQ_JITTER_FACTOR: 8          # or whatever you want
+# SQ_JITTER_SIGMA: 0.1        # tweak based on scale of your SQs

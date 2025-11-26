@@ -149,8 +149,12 @@ def run_net(args, config, train_writer=None, val_writer=None):
                 occ_targets = (sdf_vals <= 0.0).float()
                 #print(occ_targets.mean() * 100, "% occupied")
 
-                logits = base_model(pts, query_points)      # (B, M)
-                loss = F.binary_cross_entropy_with_logits(logits, occ_targets)
+                # Map labels into [-1, 1] just like the head output
+                #sdf_targets = torch.tanh(sdf_vals)
+                sdf_targets = sdf_vals
+
+                sdf_pred = base_model(pts, query_points)      # (B, M)
+                loss = F.l1_loss(sdf_pred, sdf_vals)
             else:
                 # Original MAE-style branch (ShapeNet / ZeroVerse / ModelNet)
                 npoints = config.dataset.train.others.npoints

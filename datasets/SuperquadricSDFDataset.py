@@ -12,7 +12,7 @@ from .build import DATASETS
 from utils.logger import *
 
 # Import your SQ implicit tools
-from procedural_data_gen.sq_implicit_torch import (
+from procedural_data_gen.sq_implicit import (
     global_bounding_box_for_all_SQs,
     multi_sq_implicit_union,
     sample_grid_in_box,
@@ -86,6 +86,16 @@ class SuperquadricSDFDataset(data.Dataset):
         # fraction of total points that should be inside (≈ class balance)
         self.occ_inside_fraction = getattr(config, "SQ_OCC_INSIDE_FRACTION", 0.5)
 
+        # How we sample SDF / occupancy query points
+        self.sampling_method = getattr(config, "SQ_SDF_SAMPLING", "grid")
+
+        # For surface-jitter sampling: how many query points per surface point
+        # If npoints = 1024 and jitter_factor = 8 → 1024 * 8 = 8192 queries.
+        self.jitter_factor = getattr(config, "SQ_JITTER_FACTOR", 8)
+
+        # Standard deviation of Gaussian noise for jitter (in same units as pts / SQ)
+        self.jitter_sigma = getattr(config, "SQ_JITTER_SIGMA", 0.1)
+
         # --- build file list from {subset}.txt (same pattern as ZeroVerse) ---
         self.data_list_file = os.path.join(self.data_root, f"{self.subset}.txt")
         test_data_list_file = os.path.join(self.data_root, "test.txt")
@@ -128,13 +138,6 @@ class SuperquadricSDFDataset(data.Dataset):
             raise NotImplementedError(
                 "SuperquadricSDFDataset currently assumes USE_LMDB=True "
                 "(enriched LMDB with .sq_params sidecar)."
-            )
-
-        if self.sampling_method != "grid" and self.sampling_method != "occ_balanced":
-            # You *can* change this later and add implementations for 'random', etc.
-            raise NotImplementedError(
-                f"SuperquadricSDFDataset: sampling_method={self.sampling_method!r} "
-                f"not implemented yet (only 'grid' is supported for now)."
             )
 
     # ---------- small helpers copied/adapted from ZeroVerse ----------
@@ -361,9 +364,9 @@ class SuperquadricSDFDataset(data.Dataset):
         pts_np, sq_params_np = self._load_points_and_sq_params(sample)
 
         # --- subsample + normalize point cloud for encoder input ---
-        pts_np = self.random_sample(pts_np, self.npoints)  # (P,3)
-        #pts_np = self.pc_norm(pts_np)                      # (P,3)
-        pts_t = torch.from_numpy(pts_np).float()           # (P,3)
+        pts_surface_np = self.random_sample(pts_np, self.npoints)  # (P,3)
+        #pts_np = self.pc_norm(pts_np)                             # (P,3)
+        pts_t = torch.from_numpy(pts_surface_np).float()           # (P,3)
 
         # --- convert SQ params to torch ---
         sq_params_t = torch.from_numpy(sq_params_np).float()  # (S,11)
@@ -373,6 +376,12 @@ class SuperquadricSDFDataset(data.Dataset):
             query_points_t, sdf_vals_t, grid_shape_t = self._sample_sdf_grid(sq_params_t)
         elif self.sampling_method == "occ_balanced":
             query_points_t, sdf_vals_t, grid_shape_t = self._sample_occupancy_balanced(sq_params_t)
+        elif self.sampling_method == "sdf_balanced":
+            query_points_t, sdf_vals_t, grid_shape_t = self._sample_occupancy_balanced(sq_params_t)
+        elif self.sampling_method == "surface_jitter":
+            query_points_t, sdf_vals_t, grid_shape_t = self._sample_sdf_surface_jitter(sq_params_t, pts_surface_np)
+        elif self.sampling_method == "uniform_bbox":
+            query_points_t, sdf_vals_t, grid_shape_t = self._sample_sdf_uniform_bbox(sq_params_t)
         else:
             raise NotImplementedError(
                 f"SuperquadricSDFDataset: sampling_method={self.sampling_method!r} "
@@ -385,3 +394,97 @@ class SuperquadricSDFDataset(data.Dataset):
 
     def __len__(self) -> int:
         return len(self.file_list)
+
+    def _sample_sdf_surface_jitter(
+            self,
+            sq_params_t: torch.Tensor,
+            pts_surface_np: np.ndarray,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            """
+            Sample SDF query points by jittering subsampled surface points.
+
+            For each point in pts_surface_np (P,3) we generate `jitter_factor` new
+            query points by adding Gaussian noise with std `jitter_sigma`.
+
+            Returns:
+                query_points: (M, 3) float32 tensor on CPU
+                sdf_values:  (M,) float32 tensor on CPU
+                grid_shape:  (3,) long tensor = [M, 1, 1] (degenerate grid)
+            """
+            device = sq_params_t.device
+            dtype = sq_params_t.dtype
+
+            # Convert subsampled surface points to torch on same device/dtype as sq_params.
+            pts_surface_t = torch.from_numpy(pts_surface_np).to(device=device, dtype=dtype)  # (P,3)
+            num_surface = pts_surface_t.shape[0]
+
+            # How many jittered queries in total
+            factor = int(self.jitter_factor)
+            if factor <= 0:
+                raise ValueError(f"SQ_JITTER_FACTOR must be > 0, got {factor}")
+
+            # Repeat each surface point 'factor' times → (P * factor, 3)
+            pts_rep = pts_surface_t.unsqueeze(1).repeat(1, factor, 1).reshape(-1, 3)
+
+            # Add Gaussian noise
+            sigma = float(self.jitter_sigma)
+            if sigma > 0.0:
+                noise = torch.randn_like(pts_rep) * sigma
+                query_points = pts_rep + noise
+            else:
+                query_points = pts_rep
+
+            # Compute SDF / implicit values at these query points
+            sdf_vals = multi_sq_implicit_union(query_points, sq_params_t, signed=True)  # (M,)
+
+            # "Grid shape" is just a degenerate (M,1,1) so downstream code still works
+            M = query_points.shape[0]
+            grid_shape_t = torch.tensor([M, 1, 1], dtype=torch.long)
+
+            # Return on CPU (rest of dataset code expects CPU tensors)
+            return (
+                query_points.detach().cpu().float(),   # (M,3)
+                sdf_vals.detach().cpu().float(),       # (M,)
+                grid_shape_t,
+            )
+    
+    def _sample_sdf_uniform_bbox(
+        self,
+        sq_params_t: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """
+        Sample SDF query points uniformly at random inside the global
+        bounding box of all superquadrics for this shape.
+
+        Returns:
+            query_points: (M, 3) float32 tensor on CPU
+            sdf_values:  (M,) float32 tensor on CPU
+            grid_shape:  (3,) long tensor [M, 1, 1] (degenerate grid)
+        """
+        device = sq_params_t.device
+        dtype = sq_params_t.dtype
+
+        # Global bounding box over all SQs: (3,), (3,)
+        min_xyz, max_xyz = global_bounding_box_for_all_SQs(sq_params_t)
+
+        # Number of random query points
+        M = int(self.n_query_points)
+        if M <= 0:
+            raise ValueError(f"SQ_SDF_N_QUERY must be > 0, got {M}")
+
+        # Uniform random in [0,1]^3 → scale to [min_xyz, max_xyz]
+        # shape: (M, 3)
+        u = torch.rand((M, 3), device=device, dtype=dtype)
+        query_points = min_xyz[None, :] + u * (max_xyz[None, :] - min_xyz[None, :])
+
+        # Evaluate SQ implicit function at these points
+        sdf_vals = multi_sq_implicit_union(query_points, sq_params_t, signed=True)  # (M,)
+
+        # Degenerate "grid" shape, so downstream still works
+        grid_shape_t = torch.tensor([M, 1, 1], dtype=torch.long)
+
+        return (
+            query_points.detach().cpu().float(),  # (M,3)
+            sdf_vals.detach().cpu().float(),      # (M,)
+            grid_shape_t,
+        )
