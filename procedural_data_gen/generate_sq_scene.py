@@ -48,7 +48,6 @@ class SceneConfig:
     max_rounds: int = 6
 
     # feature toggles (start adding features behind these)
-    enable_overlap_rejection: bool = False
     enable_floor_support: bool = False
     enable_wall_placement: bool = False
 
@@ -63,12 +62,19 @@ class SceneConfig:
     # size classes for target AABB diagonal (meters)
     enable_size_classes: bool = True
     size_class_probs: Tuple[float, float, float] = (0.50, 0.35, 0.15)  # small, medium, large
+    #size_class_probs: Tuple[float, float, float] = (0.0, 0.0, 1.0)  # small, medium, large
     diag_small: Tuple[float, float] = (0.25, 0.80)
     diag_medium: Tuple[float, float] = (0.80, 1.60)
     diag_large: Tuple[float, float] = (1.60, 3.00)
 
     # used only if enable_size_classes=False
     target_diag_range: Tuple[float, float] = (0.40, 2.50)
+
+    # overlap prevention (AABB-based)
+    enable_overlap_rejection: bool = False
+    overlap_max_ratio: float = 0.05    # reject if inter_vol / min(volA, volB) exceeds this
+    overlap_max_tries: int = 50        # placement attempts per object
+    overlap_fallback_place_best: bool = True
 
 
 @dataclass
@@ -83,6 +89,11 @@ class SceneState:
     # accumulated outputs
     xyz: np.ndarray  # (N,3) float32
     rgb: np.ndarray  # (N,3) uint8
+
+    # placed effective AABBs (after intersecting with room interior)
+    placed_aabb_mins: List[np.ndarray]
+    placed_aabb_maxs: List[np.ndarray]
+
 
     # optional stats/debug
     pts_before_clip: int = 0
@@ -206,11 +217,94 @@ def _sample_target_diag(rng: np.random.Generator, cfg: SceneConfig) -> float:
         lo, hi = cfg.diag_large
     return float(rng.uniform(lo, hi))
 
+def _aabb_min_max(xyz: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    mins = xyz.min(axis=0)
+    maxs = xyz.max(axis=0)
+    return mins.astype(np.float32), maxs.astype(np.float32)
+
+
+def _aabb_volume(mins: np.ndarray, maxs: np.ndarray) -> float:
+    d = np.maximum(0.0, (maxs - mins).astype(np.float32))
+    return float(d[0] * d[1] * d[2])
+
+
+def _aabb_intersection(min_a: np.ndarray, max_a: np.ndarray,
+                       min_b: np.ndarray, max_b: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    min_i = np.maximum(min_a, min_b)
+    max_i = np.minimum(max_a, max_b)
+    return min_i, max_i
+
+
+def _aabb_intersection_volume(min_a: np.ndarray, max_a: np.ndarray,
+                              min_b: np.ndarray, max_b: np.ndarray) -> float:
+    min_i, max_i = _aabb_intersection(min_a, max_a, min_b, max_b)
+    return _aabb_volume(min_i, max_i)
+
+
+def _room_inner_aabb(cfg: SceneConfig, L: float, W: float, H: float) -> Tuple[np.ndarray, np.ndarray]:
+    m = cfg.room_margin
+    room_min = np.array([m, m, m], dtype=np.float32)
+    room_max = np.array([L - m, W - m, H - m], dtype=np.float32)
+    return room_min, room_max
+
+
+def _effective_aabb(mins_w: np.ndarray, maxs_w: np.ndarray,
+                    room_min: np.ndarray, room_max: np.ndarray) -> Tuple[np.ndarray, np.ndarray, float]:
+    """Intersect object AABB with room interior AABB and return (min,max,vol_effective)."""
+    eff_min, eff_max = _aabb_intersection(mins_w, maxs_w, room_min, room_max)
+    vol = _aabb_volume(eff_min, eff_max)
+    return eff_min, eff_max, vol
+
+
+def _overlap_ratio_with_placed(
+    cand_min: np.ndarray,
+    cand_max: np.ndarray,
+    cand_vol: float,
+    placed_mins: List[np.ndarray],
+    placed_maxs: List[np.ndarray],
+) -> float:
+    """Return max overlap ratio vs placed boxes: inter_vol / min(vol_cand, vol_other)."""
+    if cand_vol <= 0.0 or len(placed_mins) == 0:
+        return 0.0
+
+    max_ratio = 0.0
+    for mn, mx in zip(placed_mins, placed_maxs):
+        vol_other = _aabb_volume(mn, mx)
+        if vol_other <= 0.0:
+            continue
+        inter = _aabb_intersection_volume(cand_min, cand_max, mn, mx)
+        if inter <= 0.0:
+            continue
+        ratio = inter / min(cand_vol, vol_other)
+        if ratio > max_ratio:
+            max_ratio = ratio
+    return float(max_ratio)
+
+
+def _sample_translation_free(
+    rng: np.random.Generator,
+    L: float,
+    W: float,
+    H: float,
+    margin: float,
+) -> np.ndarray:
+    """Sample a translation target (centroid) anywhere in the room interior."""
+    return np.array(
+        [
+            rng.uniform(margin, max(margin, L - margin)),
+            rng.uniform(margin, max(margin, W - margin)),
+            rng.uniform(margin, max(margin, H - margin)),
+        ],
+        dtype=np.float32,
+    )
+
+
 
 # ---------------------- Pipeline stages ----------------------
 
 def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
     rng = state.rng
+    room_min, room_max = _room_inner_aabb(cfg, state.L, state.W, state.H)
     n_obj = int(rng.integers(cfg.n_obj_range[0], cfg.n_obj_range[1] + 1))
     hues = _sample_distinct_hues(rng, n_obj, min_dist=0.12)
 
@@ -242,7 +336,69 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
         base_rgb_u8 = _rgb01_to_uint8(colorsys.hsv_to_rgb(hues[j], 0.85, 0.90))
         rgb = _make_object_sq_colors(rng, sq_ids, base_rgb_u8)
 
-        xyz = _place_object_randomly(xyz, rng, state.L, state.W, state.H, cfg.room_margin)
+        # --- overlap-aware placement (optional) ---
+        centroid = xyz.mean(axis=0).astype(np.float32)
+        obj_mins, obj_maxs = _aabb_min_max(xyz)
+
+        best_xyz = None
+        best_eff_min = None
+        best_eff_max = None
+        best_score = float("inf")  # lower is better (max overlap ratio)
+        best_eff_vol = 0.0
+
+        tries = cfg.overlap_max_tries if cfg.enable_overlap_rejection else 1
+        for _ in range(max(1, tries)):
+            target = _sample_translation_free(rng, state.L, state.W, state.H, cfg.room_margin)
+            t = (target - centroid).astype(np.float32)
+
+            xyz_cand = xyz + t
+            mins_w = obj_mins + t
+            maxs_w = obj_maxs + t
+
+            eff_min, eff_max, eff_vol = _effective_aabb(mins_w, maxs_w, room_min, room_max)
+
+            # If object contributes nothing inside the room after clipping, skip this try.
+            if eff_vol <= 0.0:
+                score = float("inf")
+            else:
+                score = _overlap_ratio_with_placed(
+                    eff_min, eff_max, eff_vol,
+                    state.placed_aabb_mins, state.placed_aabb_maxs
+                )
+
+            if not cfg.enable_overlap_rejection:
+                # old behavior: accept immediately
+                best_xyz, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, eff_min, eff_max, eff_vol
+                best_score = score
+                break
+
+            # accept if passes threshold
+            if score <= cfg.overlap_max_ratio:
+                best_xyz, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, eff_min, eff_max, eff_vol
+                best_score = score
+                break
+
+            # otherwise track best candidate
+            if score < best_score:
+                best_xyz, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, eff_min, eff_max, eff_vol
+                best_score = score
+
+        # Decide what to do if we never found a "good enough" placement
+        if best_xyz is None:
+            # extremely unlikely, but safe
+            continue
+
+        if cfg.enable_overlap_rejection and (best_score > cfg.overlap_max_ratio) and (not cfg.overlap_fallback_place_best):
+            # Skip this object entirely
+            continue
+
+        xyz = best_xyz  # accept best or accepted placement
+
+        # Register effective AABB for future overlap tests (only if it has volume)
+        if best_eff_vol > 0.0:
+            state.placed_aabb_mins.append(best_eff_min)
+            state.placed_aabb_maxs.append(best_eff_max)
+
 
         pts_before += xyz.shape[0]
         xyz_list.append(xyz)
@@ -446,7 +602,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--size-classes", action="store_true", default=True,
                    help="Use small/medium/large diagonal ranges for scaling")
     p.add_argument("--no-size-classes", dest="size_classes", action="store_false")
-
+    p.add_argument("--overlap", action="store_true", default=False, help="Enable AABB overlap rejection")
+    p.add_argument("--no-overlap", dest="overlap", action="store_false")
+    p.add_argument("--overlap-max-ratio", type=float, default=0.05,
+                   help="Reject if inter_vol / min(volA,volB) exceeds this")
+    p.add_argument("--overlap-tries", type=int, default=50, help="Placement tries per object")
 
     return p.parse_args()
 
@@ -462,6 +622,9 @@ def main() -> None:
         room_shell_density=args.wall_density,
         enable_scaling=args.scale,
         enable_size_classes=args.size_classes,
+        enable_overlap_rejection=args.overlap,
+        overlap_max_ratio=args.overlap_max_ratio,
+        overlap_max_tries=args.overlap_tries,
     )
 
     rng_master = np.random.default_rng(None if cfg.seed == -1 else cfg.seed)
@@ -479,6 +642,8 @@ def main() -> None:
         xyz=np.zeros((0, 3), dtype=np.float32),
         rgb=np.zeros((0, 3), dtype=np.uint8),
         pts_before_clip=0,
+        placed_aabb_mins=[],
+        placed_aabb_maxs=[],
     )
 
     for stage in PIPELINE:
