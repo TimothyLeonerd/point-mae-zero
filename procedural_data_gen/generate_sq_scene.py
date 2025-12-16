@@ -48,7 +48,6 @@ class SceneConfig:
     max_rounds: int = 6
 
     # feature toggles (start adding features behind these)
-    enable_room_shell: bool = False
     enable_scaling: bool = False
     enable_overlap_rejection: bool = False
     enable_floor_support: bool = False
@@ -56,7 +55,7 @@ class SceneConfig:
 
     # room shell (walls/floor/ceiling) points
     enable_room_shell: bool = True
-    room_shell_density: float = 800.0   # points per m^2 of surface
+    room_shell_density: float = 200.0   # points per m^2 of surface
     room_shell_max_points: int = 200_000
 
 
@@ -241,7 +240,7 @@ def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
                 "growth": cfg.growth,
                 "max_rounds": cfg.max_rounds,
             },
-            "points_before_clip": int(state.pts_before_clip),
+            "object_points_before_clip": int(state.pts_before_clip),
             "points_after_clip": int(state.xyz.shape[0]),
             "toggles": {
                 "enable_room_shell": cfg.enable_room_shell,
@@ -249,6 +248,11 @@ def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
                 "enable_overlap_rejection": cfg.enable_overlap_rejection,
                 "enable_floor_support": cfg.enable_floor_support,
                 "enable_wall_placement": cfg.enable_wall_placement,
+            },
+            "room_shell": {
+            "enabled": cfg.enable_room_shell,
+            "density": cfg.room_shell_density,
+            "max_points": cfg.room_shell_max_points,
             },
         }
         (cfg.out_root / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -293,7 +297,6 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
         return state
 
     # Split points proportional to surface area
-    # (Avoid 0 counts by using max(1, ...) for nonzero-area faces)
     def alloc(area: float) -> int:
         return int(round(n_total * (area / max(total_area, 1e-9))))
 
@@ -370,8 +373,8 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
 
 # Order matters: later you’ll insert new stages here (e.g., room shell before clip).
 PIPELINE: List[Stage] = [
-    stage_add_objects_random,
     stage_add_room_shell,
+    stage_add_objects_random,
     stage_clip_to_room,
     stage_write_outputs,
 ]
@@ -387,7 +390,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-write-meta", dest="write_meta", action="store_false")
     p.add_argument("--walls", action="store_true", default=True, help="Enable room shell points")
     p.add_argument("--no-walls", dest="walls", action="store_false")
-    p.add_argument("--wall-density", type=float, default=800.0,
+    p.add_argument("--wall-density", type=float, default=200.0,
                help="Room shell density in points per m^2 (only used if --walls).")
 
     return p.parse_args()
