@@ -48,7 +48,6 @@ class SceneConfig:
     max_rounds: int = 6
 
     # feature toggles (start adding features behind these)
-    enable_scaling: bool = False
     enable_overlap_rejection: bool = False
     enable_floor_support: bool = False
     enable_wall_placement: bool = False
@@ -57,6 +56,10 @@ class SceneConfig:
     enable_room_shell: bool = True
     room_shell_density: float = 200.0   # points per m^2 of surface
     room_shell_max_points: int = 200_000
+
+    # scaling (object-level)
+    enable_scaling: bool = False
+    target_diag_range: Tuple[float, float] = (0.4, 2.5)  # meters
 
 
 @dataclass
@@ -87,6 +90,11 @@ def _sample_room(rng: np.random.Generator, cfg: SceneConfig) -> Tuple[float, flo
     H = float(rng.uniform(*cfg.H_range))
     return L, W, H
 
+def _aabb_diag(xyz: np.ndarray) -> float:
+    mins = xyz.min(axis=0)
+    maxs = xyz.max(axis=0)
+    d = float(np.linalg.norm(maxs - mins))
+    return d
 
 def _place_object_randomly(
     xyz: np.ndarray,
@@ -198,6 +206,14 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
         xyz = points4[:, :3].astype(np.float32, copy=False)
         sq_ids = points4[:, 3]
 
+        if cfg.enable_scaling:
+            d0 = _aabb_diag(xyz)
+            # avoid divide-by-zero on degenerate clouds
+            if d0 > 1e-8:
+                d_target = float(rng.uniform(*cfg.target_diag_range))
+                s = d_target / d0
+                xyz = xyz * s
+
         base_rgb_u8 = _rgb01_to_uint8(colorsys.hsv_to_rgb(hues[j], 0.85, 0.90))
         rgb = _make_object_sq_colors(rng, sq_ids, base_rgb_u8)
 
@@ -253,6 +269,10 @@ def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
             "enabled": cfg.enable_room_shell,
             "density": cfg.room_shell_density,
             "max_points": cfg.room_shell_max_points,
+            },
+            "scaling": {
+                "enabled": cfg.enable_scaling,
+                "target_diag_range": list(cfg.target_diag_range),
             },
         }
         (cfg.out_root / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -392,6 +412,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--no-walls", dest="walls", action="store_false")
     p.add_argument("--wall-density", type=float, default=200.0,
                help="Room shell density in points per m^2 (only used if --walls).")
+    p.add_argument("--scale", action="store_true", default=False, help="Enable object scaling")
+    p.add_argument("--diag-min", type=float, default=0.4, help="Min target AABB diagonal (m)")
+    p.add_argument("--diag-max", type=float, default=2.5, help="Max target AABB diagonal (m)")
 
     return p.parse_args()
 
@@ -405,7 +428,10 @@ def main() -> None:
         write_meta=args.write_meta,
         enable_room_shell=args.walls,
         room_shell_density=args.wall_density,
+        enable_scaling=args.scale,
+        target_diag_range=(args.diag_min, args.diag_max),
     )
+
 
     rng_master = np.random.default_rng(None if cfg.seed == -1 else cfg.seed)
     scene_seed = int(rng_master.integers(0, 2**32 - 1, dtype=np.uint32))
