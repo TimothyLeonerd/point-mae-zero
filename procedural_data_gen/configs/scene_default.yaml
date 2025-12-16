@@ -1,0 +1,96 @@
+# -----------------------------
+# Scene generator configuration
+# Units: meters
+# -----------------------------
+
+output:
+  # Output directory where coord.npy/color.npy/meta.json are written.
+  # You can still override this via --out-root.
+  out_root: /home/tylerich/work/Master_Arbeit/point-mae-zero/data_tmp/r_9
+
+  # RNG seed. Use -1 for OS entropy / non-deterministic.
+  seed: 42
+
+  # Write meta.json (highly recommended for debugging).
+  write_meta: true
+
+
+room:
+  # Margin used for:
+  #  - clipping (points outside [m, L-m] etc. are removed)
+  #  - placement sampling ranges for object centroids
+  margin: 0.05
+
+  # Room dimensions (uniform sampling in these ranges).
+  L_range: [3.0, 8.0]   # length in x
+  W_range: [3.0, 8.0]   # width  in y
+  H_range: [2.2, 3.5]   # height in z
+
+
+objects:
+  # Number of objects in the scene (uniform integer).
+  n_obj_range: [6, 20]
+
+  # Max number of superquadrics per object (forwarded to _make_cloud_once).
+  n_sq_max: 9
+
+  # Requested points per object before clipping.
+  points_per_object: 20000
+
+  # _make_cloud_once parameters (leave as-is unless you know what you want).
+  alpha: 2.0
+  growth: 1.3
+  max_rounds: 6
+
+
+walls:
+  # Add room shell points (walls + floor + ceiling).
+  enable: true
+
+  # Density in points per m^2 of total inner surface area.
+  density: 200.0
+
+  # Absolute cap to keep point counts reasonable.
+  max_points: 200000
+
+
+scaling:
+  # Scale each object after sampling so its AABB diagonal matches a target range.
+  enable: true
+
+  # Use size classes (small/medium/large) instead of a single uniform range.
+  enable_size_classes: true
+
+  # Probabilities for [small, medium, large] classes. (Will be normalized if not exact.)
+  size_class_probs: [0.50, 0.35, 0.15]
+
+  # Target AABB diagonal ranges in meters.
+  diag_small:  [0.25, 0.80]
+  diag_medium: [0.80, 1.60]
+  diag_large:  [1.60, 3.00]
+
+  # Fallback if enable_size_classes=false
+  target_diag_range: [0.40, 2.50]
+
+
+overlap:
+  # AABB overlap rejection during placement.
+  # Overlap is checked on *effective AABB* = (object AABB ∩ room interior AABB),
+  # which matches the post-clipping geometry.
+  enable: true
+
+  # Reject if intersection_volume / min(volA, volB) > max_ratio.
+  max_ratio: 0.05
+
+  # Placement attempts per object.
+  max_tries: 50
+
+  # If true: after max_tries, place the best candidate anyway (less failure, more overlap).
+  # If false: skip the object if no valid placement found.
+  fallback_place_best: true
+
+
+toggles:
+  # Not used yet (placeholders for future features).
+  enable_floor_support: false   # snap objects to floor (min-z near floor)
+  enable_wall_placement: false  # prefer placing some objects near walls

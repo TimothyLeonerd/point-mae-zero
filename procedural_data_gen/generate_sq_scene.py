@@ -22,6 +22,7 @@ from typing import Callable, List, Tuple
 import numpy as np
 
 from sample_SQs import _make_cloud_once  # returns points4 Nx4, last col = SQ id
+from dataclasses import asdict, replace
 
 
 # ---------------------- Config / State ----------------------
@@ -62,7 +63,6 @@ class SceneConfig:
     # size classes for target AABB diagonal (meters)
     enable_size_classes: bool = True
     size_class_probs: Tuple[float, float, float] = (0.50, 0.35, 0.15)  # small, medium, large
-    #size_class_probs: Tuple[float, float, float] = (0.0, 0.0, 1.0)  # small, medium, large
     diag_small: Tuple[float, float] = (0.25, 0.80)
     diag_medium: Tuple[float, float] = (0.80, 1.60)
     diag_large: Tuple[float, float] = (1.60, 3.00)
@@ -104,6 +104,121 @@ Stage = Callable[[SceneState, SceneConfig], SceneState]
 
 # ---------------------- Small helpers ----------------------
 
+def _load_yaml(path: str) -> dict:
+    try:
+        import yaml
+    except ImportError as e:
+        raise RuntimeError("PyYAML not installed. Install with: pip install pyyaml") from e
+
+    with open(path, "r") as f:
+        data = yaml.safe_load(f)
+    return data or {}
+
+
+def _get(d: dict, *keys, default=None):
+    """Nested dict getter: _get(cfg, 'room','margin', default=0.05)."""
+    cur = d
+    for k in keys:
+        if not isinstance(cur, dict) or k not in cur:
+            return default
+        cur = cur[k]
+    return cur
+
+
+def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
+    """
+    Merge YAML dict into SceneConfig. YAML values override cfg defaults.
+    CLI should override *after* this.
+    """
+    # output
+    out_root = _get(y, "output", "out_root", default=None)
+    seed = _get(y, "output", "seed", default=None)
+    write_meta = _get(y, "output", "write_meta", default=None)
+
+    # room
+    room_margin = _get(y, "room", "margin", default=None)
+    L_range = _get(y, "room", "L_range", default=None)
+    W_range = _get(y, "room", "W_range", default=None)
+    H_range = _get(y, "room", "H_range", default=None)
+
+    # objects
+    n_obj_range = _get(y, "objects", "n_obj_range", default=None)
+    n_sq_max = _get(y, "objects", "n_sq_max", default=None)
+    points_per_object = _get(y, "objects", "points_per_object", default=None)
+    alpha = _get(y, "objects", "alpha", default=None)
+    growth = _get(y, "objects", "growth", default=None)
+    max_rounds = _get(y, "objects", "max_rounds", default=None)
+
+    # walls
+    walls_enable = _get(y, "walls", "enable", default=None)
+    walls_density = _get(y, "walls", "density", default=None)
+    walls_max_points = _get(y, "walls", "max_points", default=None)
+
+    # scaling
+    sc_enable = _get(y, "scaling", "enable", default=None)
+    sc_enable_classes = _get(y, "scaling", "enable_size_classes", default=None)
+    sc_probs = _get(y, "scaling", "size_class_probs", default=None)
+    sc_small = _get(y, "scaling", "diag_small", default=None)
+    sc_med = _get(y, "scaling", "diag_medium", default=None)
+    sc_large = _get(y, "scaling", "diag_large", default=None)
+    sc_fallback = _get(y, "scaling", "target_diag_range", default=None)
+
+    # overlap
+    ov_enable = _get(y, "overlap", "enable", default=None)
+    ov_ratio = _get(y, "overlap", "max_ratio", default=None)
+    ov_tries = _get(y, "overlap", "max_tries", default=None)
+    ov_fallback = _get(y, "overlap", "fallback_place_best", default=None)
+
+    # extra toggles (future)
+    t_floor = _get(y, "toggles", "enable_floor_support", default=None)
+    t_wall = _get(y, "toggles", "enable_wall_placement", default=None)
+
+    # Apply overrides (convert lists->tuples where needed)
+    new_cfg = replace(
+        cfg,
+        out_root=Path(out_root) if out_root is not None else cfg.out_root,
+        seed=int(seed) if seed is not None else cfg.seed,
+        write_meta=bool(write_meta) if write_meta is not None else cfg.write_meta,
+
+        room_margin=float(room_margin) if room_margin is not None else cfg.room_margin,
+        L_range=tuple(L_range) if L_range is not None else cfg.L_range,
+        W_range=tuple(W_range) if W_range is not None else cfg.W_range,
+        H_range=tuple(H_range) if H_range is not None else cfg.H_range,
+
+        n_obj_range=tuple(n_obj_range) if n_obj_range is not None else cfg.n_obj_range,
+        n_sq_max=int(n_sq_max) if n_sq_max is not None else cfg.n_sq_max,
+        points_per_object=int(points_per_object) if points_per_object is not None else cfg.points_per_object,
+        alpha=float(alpha) if alpha is not None else cfg.alpha,
+        growth=float(growth) if growth is not None else cfg.growth,
+        max_rounds=int(max_rounds) if max_rounds is not None else cfg.max_rounds,
+
+        enable_room_shell=bool(walls_enable) if walls_enable is not None else cfg.enable_room_shell,
+        room_shell_density=float(walls_density) if walls_density is not None else cfg.room_shell_density,
+        room_shell_max_points=int(walls_max_points) if walls_max_points is not None else cfg.room_shell_max_points,
+
+        enable_scaling=bool(sc_enable) if sc_enable is not None else cfg.enable_scaling,
+        enable_size_classes=bool(sc_enable_classes) if sc_enable_classes is not None else cfg.enable_size_classes,
+        size_class_probs=tuple(sc_probs) if sc_probs is not None else cfg.size_class_probs,
+        diag_small=tuple(sc_small) if sc_small is not None else cfg.diag_small,
+        diag_medium=tuple(sc_med) if sc_med is not None else cfg.diag_medium,
+        diag_large=tuple(sc_large) if sc_large is not None else cfg.diag_large,
+        target_diag_range=tuple(sc_fallback) if sc_fallback is not None else cfg.target_diag_range,
+
+        enable_overlap_rejection=bool(ov_enable) if ov_enable is not None else cfg.enable_overlap_rejection,
+        overlap_max_ratio=float(ov_ratio) if ov_ratio is not None else cfg.overlap_max_ratio,
+        overlap_max_tries=int(ov_tries) if ov_tries is not None else cfg.overlap_max_tries,
+        overlap_fallback_place_best=bool(ov_fallback) if ov_fallback is not None else cfg.overlap_fallback_place_best,
+
+        enable_floor_support=bool(t_floor) if t_floor is not None else cfg.enable_floor_support,
+        enable_wall_placement=bool(t_wall) if t_wall is not None else cfg.enable_wall_placement,
+    )
+    return new_cfg
+
+def _sceneconfig_to_jsonable(cfg: SceneConfig) -> dict:
+    d = asdict(cfg)
+    d["out_root"] = str(d["out_root"])
+    return d
+
 def _sample_room(rng: np.random.Generator, cfg: SceneConfig) -> Tuple[float, float, float]:
     L = float(rng.uniform(*cfg.L_range))
     W = float(rng.uniform(*cfg.W_range))
@@ -115,27 +230,6 @@ def _aabb_diag(xyz: np.ndarray) -> float:
     maxs = xyz.max(axis=0)
     d = float(np.linalg.norm(maxs - mins))
     return d
-
-def _place_object_randomly(
-    xyz: np.ndarray,
-    rng: np.random.Generator,
-    L: float,
-    W: float,
-    H: float,
-    margin: float,
-) -> np.ndarray:
-    """Shift object so its centroid is uniformly sampled inside room interior."""
-    centroid = xyz.mean(axis=0)
-    target = np.array(
-        [
-            rng.uniform(margin, max(margin, L - margin)),
-            rng.uniform(margin, max(margin, W - margin)),
-            rng.uniform(margin, max(margin, H - margin)),
-        ],
-        dtype=xyz.dtype,
-    )
-    return xyz + (target - centroid)
-
 
 def _clip_keep_mask(xyz: np.ndarray, L: float, W: float, H: float, margin: float) -> np.ndarray:
     m = margin
@@ -427,40 +521,15 @@ def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
 
     if cfg.write_meta:
         meta = {
-            "seed": state.scene_seed,
-            "room": {"L": state.L, "W": state.W, "H": state.H, "margin": cfg.room_margin},
-            "n_objects_range": list(cfg.n_obj_range),
-            "object_sampler": {
-                "n_sq_max": cfg.n_sq_max,
-                "points_per_object": cfg.points_per_object,
-                "alpha": cfg.alpha,
-                "growth": cfg.growth,
-                "max_rounds": cfg.max_rounds,
+            "scene_seed": state.scene_seed,
+            "sampled_room": {"L": state.L, "W": state.W, "H": state.H},
+            "points": {
+                "object_points_before_clip": int(state.pts_before_clip),
+                "points_after_clip": int(state.xyz.shape[0]),
             },
-            "object_points_before_clip": int(state.pts_before_clip),
-            "points_after_clip": int(state.xyz.shape[0]),
-            "toggles": {
-                "enable_room_shell": cfg.enable_room_shell,
-                "enable_scaling": cfg.enable_scaling,
-                "enable_overlap_rejection": cfg.enable_overlap_rejection,
-                "enable_floor_support": cfg.enable_floor_support,
-                "enable_wall_placement": cfg.enable_wall_placement,
-            },
-            "room_shell": {
-            "enabled": cfg.enable_room_shell,
-            "density": cfg.room_shell_density,
-            "max_points": cfg.room_shell_max_points,
-            },
-            "scaling": {
-                "enabled": cfg.enable_scaling,
-                "enable_size_classes": cfg.enable_size_classes,
-                "size_class_probs": list(cfg.size_class_probs),
-                "diag_small": list(cfg.diag_small),
-                "diag_medium": list(cfg.diag_medium),
-                "diag_large": list(cfg.diag_large),
-                "fallback_target_diag_range": list(cfg.target_diag_range),
-            },
-        }
+            "scene_config": _sceneconfig_to_jsonable(cfg),
+            }
+
         (cfg.out_root / "meta.json").write_text(json.dumps(meta, indent=2))
 
     print(f"Wrote: {cfg.out_root / 'coord.npy'} and {cfg.out_root / 'color.npy'}")
@@ -590,43 +659,26 @@ PIPELINE: List[Stage] = [
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
-    p.add_argument("--out-root", required=True, help="Directory to write coord.npy + color.npy (+ meta.json).")
-    p.add_argument("--seed", type=int, default=42, help="Seed for reproducibility. Use -1 for OS entropy.")
-    p.add_argument("--write-meta", action="store_true", default=True, help="Write meta.json next to outputs.")
-    p.add_argument("--no-write-meta", dest="write_meta", action="store_false")
-    p.add_argument("--walls", action="store_true", default=True, help="Enable room shell points")
-    p.add_argument("--no-walls", dest="walls", action="store_false")
-    p.add_argument("--wall-density", type=float, default=200.0,
-               help="Room shell density in points per m^2 (only used if --walls).")
-    p.add_argument("--scale", action="store_true", default=False, help="Enable object scaling")
-    p.add_argument("--size-classes", action="store_true", default=True,
-                   help="Use small/medium/large diagonal ranges for scaling")
-    p.add_argument("--no-size-classes", dest="size_classes", action="store_false")
-    p.add_argument("--overlap", action="store_true", default=False, help="Enable AABB overlap rejection")
-    p.add_argument("--no-overlap", dest="overlap", action="store_false")
-    p.add_argument("--overlap-max-ratio", type=float, default=0.05,
-                   help="Reject if inter_vol / min(volA,volB) exceeds this")
-    p.add_argument("--overlap-tries", type=int, default=50, help="Placement tries per object")
-
+    p.add_argument("--config", required=True, type=str, help="Path to YAML config file.")
     return p.parse_args()
+
 
 
 def main() -> None:
     args = parse_args()
 
-    cfg = SceneConfig(
-        out_root=Path(args.out_root),
-        seed=args.seed,
-        write_meta=args.write_meta,
-        enable_room_shell=args.walls,
-        room_shell_density=args.wall_density,
-        enable_scaling=args.scale,
-        enable_size_classes=args.size_classes,
-        enable_overlap_rejection=args.overlap,
-        overlap_max_ratio=args.overlap_max_ratio,
-        overlap_max_tries=args.overlap_tries,
-    )
+    y = _load_yaml(args.config)
 
+    # Start from a dummy cfg (out_root will be overwritten by YAML anyway)
+    cfg = SceneConfig(out_root=Path("/tmp/unused"))
+
+    cfg = _merge_config_into_sceneconfig(cfg, y)
+
+    # (Optional) sanity check: ensure YAML provided out_root
+    if str(cfg.out_root) in ("/tmp/unused", "", "."):
+        raise ValueError("Config must set output.out_root to a real path.")
+
+    # RNG setup
     rng_master = np.random.default_rng(None if cfg.seed == -1 else cfg.seed)
     scene_seed = int(rng_master.integers(0, 2**32 - 1, dtype=np.uint32))
     rng = np.random.default_rng(scene_seed)
@@ -648,7 +700,6 @@ def main() -> None:
 
     for stage in PIPELINE:
         state = stage(state, cfg)
-
 
 if __name__ == "__main__":
     main()
