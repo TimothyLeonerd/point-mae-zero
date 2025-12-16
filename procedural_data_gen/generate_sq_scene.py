@@ -59,7 +59,16 @@ class SceneConfig:
 
     # scaling (object-level)
     enable_scaling: bool = False
-    target_diag_range: Tuple[float, float] = (0.4, 2.5)  # meters
+
+    # size classes for target AABB diagonal (meters)
+    enable_size_classes: bool = True
+    size_class_probs: Tuple[float, float, float] = (0.50, 0.35, 0.15)  # small, medium, large
+    diag_small: Tuple[float, float] = (0.25, 0.80)
+    diag_medium: Tuple[float, float] = (0.80, 1.60)
+    diag_large: Tuple[float, float] = (1.60, 3.00)
+
+    # used only if enable_size_classes=False
+    target_diag_range: Tuple[float, float] = (0.40, 2.50)
 
 
 @dataclass
@@ -181,6 +190,22 @@ def _make_object_sq_colors(
 
     return sq_lut[sq_ids_int]
 
+def _sample_target_diag(rng: np.random.Generator, cfg: SceneConfig) -> float:
+    if not cfg.enable_size_classes:
+        return float(rng.uniform(*cfg.target_diag_range))
+
+    p = np.array(cfg.size_class_probs, dtype=np.float64)
+    p = p / p.sum()  # normalize (just in case)
+
+    cls = int(rng.choice(3, p=p))  # 0=small, 1=medium, 2=large
+    if cls == 0:
+        lo, hi = cfg.diag_small
+    elif cls == 1:
+        lo, hi = cfg.diag_medium
+    else:
+        lo, hi = cfg.diag_large
+    return float(rng.uniform(lo, hi))
+
 
 # ---------------------- Pipeline stages ----------------------
 
@@ -208,11 +233,11 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
 
         if cfg.enable_scaling:
             d0 = _aabb_diag(xyz)
-            # avoid divide-by-zero on degenerate clouds
             if d0 > 1e-8:
-                d_target = float(rng.uniform(*cfg.target_diag_range))
+                d_target = _sample_target_diag(rng, cfg)
                 s = d_target / d0
                 xyz = xyz * s
+
 
         base_rgb_u8 = _rgb01_to_uint8(colorsys.hsv_to_rgb(hues[j], 0.85, 0.90))
         rgb = _make_object_sq_colors(rng, sq_ids, base_rgb_u8)
@@ -272,7 +297,12 @@ def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
             },
             "scaling": {
                 "enabled": cfg.enable_scaling,
-                "target_diag_range": list(cfg.target_diag_range),
+                "enable_size_classes": cfg.enable_size_classes,
+                "size_class_probs": list(cfg.size_class_probs),
+                "diag_small": list(cfg.diag_small),
+                "diag_medium": list(cfg.diag_medium),
+                "diag_large": list(cfg.diag_large),
+                "fallback_target_diag_range": list(cfg.target_diag_range),
             },
         }
         (cfg.out_root / "meta.json").write_text(json.dumps(meta, indent=2))
@@ -413,8 +443,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--wall-density", type=float, default=200.0,
                help="Room shell density in points per m^2 (only used if --walls).")
     p.add_argument("--scale", action="store_true", default=False, help="Enable object scaling")
-    p.add_argument("--diag-min", type=float, default=0.4, help="Min target AABB diagonal (m)")
-    p.add_argument("--diag-max", type=float, default=2.5, help="Max target AABB diagonal (m)")
+    p.add_argument("--size-classes", action="store_true", default=True,
+                   help="Use small/medium/large diagonal ranges for scaling")
+    p.add_argument("--no-size-classes", dest="size_classes", action="store_false")
+
 
     return p.parse_args()
 
@@ -429,9 +461,8 @@ def main() -> None:
         enable_room_shell=args.walls,
         room_shell_density=args.wall_density,
         enable_scaling=args.scale,
-        target_diag_range=(args.diag_min, args.diag_max),
+        enable_size_classes=args.size_classes,
     )
-
 
     rng_master = np.random.default_rng(None if cfg.seed == -1 else cfg.seed)
     scene_seed = int(rng_master.integers(0, 2**32 - 1, dtype=np.uint32))
