@@ -48,10 +48,6 @@ class SceneConfig:
     growth: float = 1.3
     max_rounds: int = 6
 
-    # feature toggles (start adding features behind these)
-    enable_floor_support: bool = False
-    enable_wall_placement: bool = False
-
     # room shell (walls/floor/ceiling) points
     enable_room_shell: bool = True
     room_shell_density: float = 200.0   # points per m^2 of surface
@@ -75,6 +71,20 @@ class SceneConfig:
     overlap_max_ratio: float = 0.05    # reject if inter_vol / min(volA, volB) exceeds this
     overlap_max_tries: int = 50        # placement attempts per object
     overlap_fallback_place_best: bool = True
+
+    # placement priors
+    enable_attachments: bool = True
+
+    # z-mode probabilities (floor, float, ceiling) — will be normalized
+    z_mode_probs: Tuple[float, float, float] = (0.75, 0.20, 0.05)
+
+    # independent probability to snap to a wall (affects x/y only)
+    p_wall: float = 0.45
+
+    # gaps (meters)
+    floor_gap_range: Tuple[float, float] = (0.0, 0.02)
+    ceiling_gap_range: Tuple[float, float] = (0.0, 0.02)
+    wall_gap_range: Tuple[float, float] = (0.0, 0.15)
 
 
 @dataclass
@@ -173,6 +183,14 @@ def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
     t_floor = _get(y, "toggles", "enable_floor_support", default=None)
     t_wall = _get(y, "toggles", "enable_wall_placement", default=None)
 
+    # placement priors
+    pl_enable = _get(y, "placement", "enable_attachments", default=None)
+    pl_z_probs = _get(y, "placement", "z_mode_probs", default=None)
+    pl_p_wall = _get(y, "placement", "p_wall", default=None)
+    pl_floor_gap = _get(y, "placement", "floor_gap_range", default=None)
+    pl_ceil_gap = _get(y, "placement", "ceiling_gap_range", default=None)
+    pl_wall_gap = _get(y, "placement", "wall_gap_range", default=None)
+
     # Apply overrides (convert lists->tuples where needed)
     new_cfg = replace(
         cfg,
@@ -209,8 +227,13 @@ def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
         overlap_max_tries=int(ov_tries) if ov_tries is not None else cfg.overlap_max_tries,
         overlap_fallback_place_best=bool(ov_fallback) if ov_fallback is not None else cfg.overlap_fallback_place_best,
 
-        enable_floor_support=bool(t_floor) if t_floor is not None else cfg.enable_floor_support,
-        enable_wall_placement=bool(t_wall) if t_wall is not None else cfg.enable_wall_placement,
+        enable_attachments=bool(pl_enable) if pl_enable is not None else cfg.enable_attachments,
+        z_mode_probs=tuple(pl_z_probs) if pl_z_probs is not None else cfg.z_mode_probs,
+        p_wall=float(pl_p_wall) if pl_p_wall is not None else cfg.p_wall,
+        floor_gap_range=tuple(pl_floor_gap) if pl_floor_gap is not None else cfg.floor_gap_range,
+        ceiling_gap_range=tuple(pl_ceil_gap) if pl_ceil_gap is not None else cfg.ceiling_gap_range,
+        wall_gap_range=tuple(pl_wall_gap) if pl_wall_gap is not None else cfg.wall_gap_range,
+
     )
     return new_cfg
 
@@ -392,7 +415,17 @@ def _sample_translation_free(
         dtype=np.float32,
     )
 
-
+def _sample_z_mode(rng: np.random.Generator, cfg: SceneConfig) -> int:
+    """
+    Returns: 0=floor, 1=float, 2=ceiling
+    """
+    p = np.array(cfg.z_mode_probs, dtype=np.float64)
+    s = float(p.sum())
+    if s <= 0:
+        p = np.array([1/3, 1/3, 1/3], dtype=np.float64)
+    else:
+        p = p / s
+    return int(rng.choice(3, p=p))
 
 # ---------------------- Pipeline stages ----------------------
 
@@ -440,10 +473,64 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
         best_score = float("inf")  # lower is better (max overlap ratio)
         best_eff_vol = 0.0
 
+        # --- attachment intent for this object (sample once; stable across tries) ---
+        if cfg.enable_attachments:
+            z_mode = _sample_z_mode(rng, cfg)            # 0=floor,1=float,2=ceiling
+            on_wall = (rng.random() < cfg.p_wall)
+
+            # decide wall details if on_wall
+            wall_axis = int(rng.integers(0, 2))          # 0=x, 1=y
+            wall_side = int(rng.integers(0, 2))          # 0=near min, 1=near max
+            wall_gap = float(rng.uniform(*cfg.wall_gap_range))
+
+            floor_gap = float(rng.uniform(*cfg.floor_gap_range))
+            ceil_gap = float(rng.uniform(*cfg.ceiling_gap_range))
+        else:
+            z_mode = 1
+            on_wall = False
+            wall_axis = 0
+            wall_side = 0
+            wall_gap = 0.0
+            floor_gap = 0.0
+            ceil_gap = 0.0
+
         tries = cfg.overlap_max_tries if cfg.enable_overlap_rejection else 1
         for _ in range(max(1, tries)):
             target = _sample_translation_free(rng, state.L, state.W, state.H, cfg.room_margin)
             t = (target - centroid).astype(np.float32)
+
+            # --- apply wall snap (x/y) ---
+            if cfg.enable_attachments and on_wall:
+                if wall_axis == 0:
+                    # snap in x
+                    if wall_side == 0:
+                        # near x = margin + wall_gap (use mins)
+                        desired = cfg.room_margin + wall_gap
+                        t[0] += desired - (obj_mins[0] + t[0])
+                    else:
+                        # near x = (L - margin - wall_gap) (use maxs)
+                        desired = (state.L - cfg.room_margin - wall_gap)
+                        t[0] += desired - (obj_maxs[0] + t[0])
+                else:
+                    # snap in y
+                    if wall_side == 0:
+                        desired = cfg.room_margin + wall_gap
+                        t[1] += desired - (obj_mins[1] + t[1])
+                    else:
+                        desired = (state.W - cfg.room_margin - wall_gap)
+                        t[1] += desired - (obj_maxs[1] + t[1])
+
+            # --- apply z-mode snap (floor / ceiling / float) ---
+            if cfg.enable_attachments:
+                if z_mode == 0:
+                    # floor: mins_w[z] -> margin + floor_gap
+                    desired = cfg.room_margin + floor_gap
+                    t[2] += desired - (obj_mins[2] + t[2])
+                elif z_mode == 2:
+                    # ceiling: maxs_w[z] -> (H - margin - ceil_gap)
+                    desired = (state.H - cfg.room_margin - ceil_gap)
+                    t[2] += desired - (obj_maxs[2] + t[2])
+                # z_mode == 1 => float: do nothing
 
             xyz_cand = xyz + t
             mins_w = obj_mins + t

@@ -6,10 +6,10 @@
 output:
   # Output directory where coord.npy/color.npy/meta.json are written.
   # You can still override this via --out-root.
-  out_root: /home/tylerich/work/Master_Arbeit/point-mae-zero/data_tmp/r_9
+  out_root: /home/tylerich/work/Master_Arbeit/point-mae-zero/data_tmp/r_10
 
   # RNG seed. Use -1 for OS entropy / non-deterministic.
-  seed: 42
+  seed: 43
 
   # Write meta.json (highly recommended for debugging).
   write_meta: true
@@ -29,7 +29,7 @@ room:
 
 objects:
   # Number of objects in the scene (uniform integer).
-  n_obj_range: [6, 20]
+  n_obj_range: [6, 50]
 
   # Max number of superquadrics per object (forwarded to _make_cloud_once).
   n_sq_max: 9
@@ -94,3 +94,11 @@ toggles:
   # Not used yet (placeholders for future features).
   enable_floor_support: false   # snap objects to floor (min-z near floor)
   enable_wall_placement: false  # prefer placing some objects near walls
+
+placement:
+  enable_attachments: true
+  z_mode_probs: [0.8, 0.1, 0.1]   # floor, float, ceiling
+  p_wall: 0.5
+  floor_gap_range: [0.0, 0.02]
+  ceiling_gap_range: [0.0, 0.02]
+  wall_gap_range: [0.0, 0.15]
