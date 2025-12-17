@@ -219,6 +219,152 @@ def sample_SQ_naive(sq_pars, n_theta, n_phi):
 
     return P
 
+import numpy as np
+from scipy.spatial.transform import Rotation as Rot
+
+def sample_SQ_naive_with_normals(sq_pars, n_theta, n_phi, *, normal_eps=1e-12):
+    """
+    Vectorized sampling + analytic normals for the SAME SQ parametrization as sample_SQ_naive().
+
+    Returns:
+      P: (n_theta*n_phi, 3) float
+      N: (n_theta*n_phi, 3) float  (unit normals, outward)
+
+    SQ pars:
+      len==5  : [a_x, a_y, a_z, eps_1, eps_2]  (no rot, no trans)
+      len==11 : first 5 + euler(xyz) + t(xyz)
+    """
+    assert len(sq_pars) in (5, 11)
+    assert n_theta > 0 and n_phi > 0
+
+    if len(sq_pars) == 5:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+        euler = None
+        t = None
+    else:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[:5]
+        euler = sq_pars[5:8]
+        t     = sq_pars[8:11]
+
+    # trig grids (broadcastable to (n_theta, n_phi))
+    ct, st, cp, sp = _get_trig_grid(n_theta, n_phi)  # ct/st: (n_theta,1), cp/sp: (1,n_phi)
+
+    # sign * |.|^eps exactly like your existing code
+    cx = np.sign(ct) * np.abs(ct) ** eps_1   # C_{eps1}(theta)
+    sx = np.sign(st) * np.abs(st) ** eps_1   # S_{eps1}(theta)
+    c2 = np.sign(cp) * np.abs(cp) ** eps_2   # C_{eps2}(phi)
+    s2 = np.sign(sp) * np.abs(sp) ** eps_2   # S_{eps2}(phi)
+
+    # positions (n_theta, n_phi)
+    X = a_x * (cx * c2)
+    Y = a_y * (cx * s2)
+    Z = a_z * np.broadcast_to(sx, (n_theta, n_phi))
+
+    # ---- analytic derivatives wrt theta/phi (object frame) ----
+    # d/du [sign(cos u)|cos u|^e] = -e * sin(u) * |cos u|^(e-1)
+    # d/du [sign(sin u)|sin u|^e] =  e * cos(u) * |sin u|^(e-1)
+    abs_ct = np.maximum(np.abs(ct), normal_eps)
+    abs_st = np.maximum(np.abs(st), normal_eps)
+    abs_cp = np.maximum(np.abs(cp), normal_eps)
+    abs_sp = np.maximum(np.abs(sp), normal_eps)
+
+    dC1 = -eps_1 * st * (abs_ct ** (eps_1 - 1.0))   # shape (n_theta,1)
+    dS1 =  eps_1 * ct * (abs_st ** (eps_1 - 1.0))   # shape (n_theta,1)
+
+    dC2 = -eps_2 * sp * (abs_cp ** (eps_2 - 1.0))   # shape (1,n_phi)
+    dS2 =  eps_2 * cp * (abs_sp ** (eps_2 - 1.0))   # shape (1,n_phi)
+
+    # dP/dtheta = [a_x*dC1*c2, a_y*dC1*s2, a_z*dS1]
+    Ax = a_x * (dC1 * c2)
+    Ay = a_y * (dC1 * s2)
+    Az = a_z * np.broadcast_to(dS1, (n_theta, n_phi))
+
+    # dP/dphi = [a_x*cx*dC2, a_y*cx*dS2, 0]
+    Bx = a_x * (cx * dC2)
+    By = a_y * (cx * dS2)
+
+    # normal = dP/dtheta x dP/dphi
+    # cross([Ax,Ay,Az],[Bx,By,0]) = [-Az*By, Az*Bx, Ax*By - Ay*Bx]
+    Nx = -Az * By
+    Ny =  Az * Bx
+    Nz =  Ax * By - Ay * Bx
+
+    # flatten in SAME order as sample_SQ_naive (theta outer, phi inner)
+    P = np.empty((n_theta * n_phi, 3), dtype=float)
+    P[:, 0] = X.reshape(-1)
+    P[:, 1] = Y.reshape(-1)
+    P[:, 2] = Z.reshape(-1)
+
+    N = np.empty((n_theta * n_phi, 3), dtype=float)
+    N[:, 0] = Nx.reshape(-1)
+    N[:, 1] = Ny.reshape(-1)
+    N[:, 2] = Nz.reshape(-1)
+
+    # orient outward: ensure n · p >= 0 (SQ centered at origin in object frame)
+    dots = (N * P).sum(axis=1)
+    flip = dots < 0.0
+    N[flip] *= -1.0
+
+    # normalize
+    nrm = np.linalg.norm(N, axis=1, keepdims=True)
+    nrm = np.maximum(nrm, 1e-20)
+    N = N / nrm
+
+    # optional rotation (same convention as sample_SQ_naive: P = P @ R.T)
+    if euler is not None:
+        R = Rot.from_euler('xyz', euler).as_matrix()
+        P = P @ R.T
+        N = N @ R.T
+
+    # optional translation
+    if t is not None:
+        P = P + np.asarray(t, dtype=float)
+
+    return P, N
+
+def sq_inside_value(P_world: np.ndarray, sq_pars, *, eps=1e-12) -> np.ndarray:
+    """
+    Compute inside-outside value f(P) for the superellipsoid that matches your sampler.
+    Inside: f <= 1
+    """
+    assert len(sq_pars) in (5, 11)
+    P = P_world
+
+    if len(sq_pars) == 5:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars
+        euler = None
+        t = None
+    else:
+        a_x, a_y, a_z, eps_1, eps_2 = sq_pars[:5]
+        euler = sq_pars[5:8]
+        t     = sq_pars[8:11]
+
+    # transform world -> object (inverse of: P_obj @ R.T + t)
+    if t is not None:
+        P = P - np.asarray(t, dtype=float)
+    if euler is not None:
+        R = Rot.from_euler('xyz', euler).as_matrix()
+        P = P @ R  # because row-vectors and P_world = P_obj @ R.T => P_obj = P_world @ R
+
+    x = P[:, 0] / max(float(a_x), eps)
+    y = P[:, 1] / max(float(a_y), eps)
+    z = P[:, 2] / max(float(a_z), eps)
+
+    # f = ((|x|^(2/eps2) + |y|^(2/eps2))^(eps2/eps1) + |z|^(2/eps1))
+    p = 2.0 / max(float(eps_2), eps)
+    q = 2.0 / max(float(eps_1), eps)
+
+    s = (np.abs(x) ** p + np.abs(y) ** p)
+    f = (s ** (float(eps_2) / max(float(eps_1), eps))) + (np.abs(z) ** q)
+    return f
+
+def remove_points_inside_SQ_mask(P_world: np.ndarray, sq_pars, *, eps=1e-12) -> np.ndarray:
+    """
+    Return keep-mask for points that are NOT inside the SQ (i.e., keep outside points).
+    """
+    f = sq_inside_value(P_world, sq_pars, eps=eps)
+    return f > 1.0
+
 
 def set_equal_axes_quadrant_aware(ax, points):
     P = np.asarray(points)[:, :3]
@@ -339,6 +485,10 @@ def remove_points_inside_SQ(points, sq_pars):
     # filter if inside
     inside = f < 1.0
     return pts[~inside]
+
+def remove_points_inside_SQ_v2(P_world: np.ndarray, sq_pars, *, eps=1e-12) -> np.ndarray:
+    keep = remove_points_inside_SQ_mask(P_world, sq_pars, eps=eps)
+    return P_world[keep]
 
 
 def sample_two_SQ_naive(sq_pars_1st, sq_pars_2nd, n_theta, n_phi):
@@ -471,6 +621,60 @@ def sample_N_SQs_naive_exactN(sq_pars_N, n_points: int, *, alpha=2.0, growth=1.3
         k = int(np.ceil(k * growth))
     raise ValueError(f"Could not reach {n_points} points after {max_rounds} rounds; last count={M}, k={k}")
 
+def sample_N_SQs_naive_exactN_with_normals(
+    sq_pars_N, n_points: int, *, alpha=2.0, growth=1.3, max_rounds=6, rng=None, normal_eps=1e-12
+):
+    """
+    Global oversample → remove overlaps → global thin to exactly n_points.
+    Returns:
+      survivors: (n_points, 4)  with last col = SQ id
+      normals:   (n_points, 3)  unit normals corresponding to survivors
+    """
+    rng = _require_gen(rng)
+    n_SQs = len(sq_pars_N)
+    if n_points <= 0 or n_SQs == 0:
+        return np.empty((0, 4), dtype=float), np.empty((0, 3), dtype=float)
+
+    k = int(np.ceil(np.sqrt(max(1.0, alpha * n_points / n_SQs))))
+    M = 0
+
+    for _ in range(max_rounds):
+        all_pts = []
+        all_nrm = []
+
+        for i in range(n_SQs):
+            P, N = sample_SQ_naive_with_normals(sq_pars_N[i], k, k, normal_eps=normal_eps)  # (k*k,3), (k*k,3)
+
+            for j in range(n_SQs):
+                if j == i:
+                    continue
+                keep = remove_points_inside_SQ_mask(P, sq_pars_N[j])
+                P = P[keep]
+                N = N[keep]
+                if P.size == 0:
+                    break
+
+            if P.size:
+                ids = np.full((P.shape[0], 1), i, dtype=float)
+                all_pts.append(np.concatenate([P, ids], axis=1))
+                all_nrm.append(N)
+
+        if not all_pts:
+            k = int(np.ceil(k * growth))
+            continue
+
+        survivors = np.concatenate(all_pts, axis=0)
+        normals = np.concatenate(all_nrm, axis=0)
+        M = survivors.shape[0]
+
+        if M >= n_points:
+            idx = rng.choice(M, n_points, replace=False)
+            return survivors[idx], normals[idx]
+
+        k = int(np.ceil(k * growth))
+
+    raise ValueError(f"Could not reach {n_points} points after {max_rounds} rounds; last count={M}, k={k}")
+
 def gen_random_SQs_points(n_sqs: int, n_points: int, *, rng: Generator, alpha=2.0, growth=1.3, max_rounds=6):
     """Create n_sqs random SQs with get_random_SQ_pars(rng=child_rng) and sample exactly n_points total."""
     rng = _require_gen(rng)
@@ -529,6 +733,21 @@ def _make_cloud_once(n_SQ_max: int, n_points: int, *, rng: Generator,
     pts = sample_N_SQs_naive_exactN(sq_pars_list, n_points, alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng)
     return pts, sq_pars_list
 
+def _make_cloud_once_with_normals(n_SQ_max: int, n_points: int, *, rng: Generator,
+                                  alpha=2.0, growth=1.3, max_rounds=6, normal_eps=1e-12):
+    """
+    One attempt: returns (points_with_ids Nx4 float64, normals Nx3 float64, sq_pars_list)
+    """
+    rng = _require_gen(rng)
+    n_sqs = int(rng.integers(1, n_SQ_max + 1))
+    gens = _child_generators(rng, n_sqs)
+    sq_pars_list = [get_random_SQ_pars(g) for g in gens]
+    pts, nrm = sample_N_SQs_naive_exactN_with_normals(
+        sq_pars_list, n_points,
+        alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng,
+        normal_eps=normal_eps
+    )
+    return pts, nrm, sq_pars_list
 
 # ---- NPY writer (batched) ----
 def _write_npy_batch(batch: List[Tuple[np.ndarray, List[List[float]]]],

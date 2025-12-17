@@ -1,144 +1,149 @@
 #!/usr/bin/env python3
-"""
-Quick viewer for coord.npy (+ optional color.npy) using matplotlib (3D scatter).
-
-Usage:
-  python procedural_data_gen/view_coord.py --in-root /tmp/sq_scene --show-box
-"""
-
-from __future__ import annotations
-
 import argparse
-import json
 from pathlib import Path
 
 import numpy as np
 import matplotlib.pyplot as plt
 
 
-def parse_args() -> argparse.Namespace:
+def _load_npy(root: Path, name: str):
+    p = root / name
+    if not p.exists():
+        return None
+    return np.load(p)
+
+
+def _subsample_indices(rng: np.random.Generator, N: int, max_n: int):
+    if max_n <= 0 or N <= max_n:
+        return np.arange(N, dtype=np.int64)
+    return rng.choice(N, size=max_n, replace=False).astype(np.int64)
+
+
+def _draw_box(ax, L, W, H, m=0.0):
+    # draw inner box [m, L-m] x [m, W-m] x [m, H-m]
+    xs = [m, L - m]
+    ys = [m, W - m]
+    zs = [m, H - m]
+
+    # 12 edges
+    edges = [
+        # bottom rectangle (z=zs[0])
+        ((xs[0], ys[0], zs[0]), (xs[1], ys[0], zs[0])),
+        ((xs[1], ys[0], zs[0]), (xs[1], ys[1], zs[0])),
+        ((xs[1], ys[1], zs[0]), (xs[0], ys[1], zs[0])),
+        ((xs[0], ys[1], zs[0]), (xs[0], ys[0], zs[0])),
+        # top rectangle (z=zs[1])
+        ((xs[0], ys[0], zs[1]), (xs[1], ys[0], zs[1])),
+        ((xs[1], ys[0], zs[1]), (xs[1], ys[1], zs[1])),
+        ((xs[1], ys[1], zs[1]), (xs[0], ys[1], zs[1])),
+        ((xs[0], ys[1], zs[1]), (xs[0], ys[0], zs[1])),
+        # vertical edges
+        ((xs[0], ys[0], zs[0]), (xs[0], ys[0], zs[1])),
+        ((xs[1], ys[0], zs[0]), (xs[1], ys[0], zs[1])),
+        ((xs[1], ys[1], zs[0]), (xs[1], ys[1], zs[1])),
+        ((xs[0], ys[1], zs[0]), (xs[0], ys[1], zs[1])),
+    ]
+    for (x0, y0, z0), (x1, y1, z1) in edges:
+        ax.plot([x0, x1], [y0, y1], [z0, z1], linewidth=1.0)
+
+
+def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--in-root", required=True, help="Folder containing coord.npy (and optionally color.npy, meta.json)")
-    p.add_argument("--max-points", type=int, default=200_000, help="Downsample for visualization")
-    p.add_argument("--seed", type=int, default=0, help="Seed for visualization downsampling")
-    p.add_argument("--elev", type=float, default=20.0, help="Camera elevation")
-    p.add_argument("--azim", type=float, default=-60.0, help="Camera azimuth")
-    p.add_argument("--show-box", action="store_true", help="Draw room bounding box (requires meta.json)")
+    p.add_argument("--in-root", required=True, help="Directory containing coord.npy (+ optional color.npy/normal.npy/meta.json)")
+    p.add_argument("--max-points", type=int, default=200_000, help="Max points to draw (scatter).")
+    p.add_argument("--seed", type=int, default=0, help="Seed for subsampling.")
+    p.add_argument("--point-size", type=float, default=1.0, help="Scatter marker size.")
+    p.add_argument("--show-box", action="store_true", help="Draw room box if meta.json exists.")
+    p.add_argument("--show-normals", action="store_true", help="Draw normals (requires normal.npy).")
+    p.add_argument("--max-normals", type=int, default=5_000, help="Max normal arrows to draw.")
+    p.add_argument("--normal-scale", type=float, default=0.08, help="Arrow length scale in meters.")
+    p.add_argument("--normal-alpha", type=float, default=0.8, help="Arrow alpha.")
     return p.parse_args()
 
 
-def set_axes_equal(ax):
-    x_limits = ax.get_xlim3d()
-    y_limits = ax.get_ylim3d()
-    z_limits = ax.get_zlim3d()
-
-    x_range = abs(x_limits[1] - x_limits[0])
-    x_middle = np.mean(x_limits)
-    y_range = abs(y_limits[1] - y_limits[0])
-    y_middle = np.mean(y_limits)
-    z_range = abs(z_limits[1] - z_limits[0])
-    z_middle = np.mean(z_limits)
-
-    plot_radius = 0.5 * max([x_range, y_range, z_range])
-    ax.set_xlim3d([x_middle - plot_radius, x_middle + plot_radius])
-    ax.set_ylim3d([y_middle - plot_radius, y_middle + plot_radius])
-    ax.set_zlim3d([z_middle - plot_radius, z_middle + plot_radius])
-
-
-def draw_room_box(ax, L: float, W: float, H: float):
-    corners = np.array([
-        [0, 0, 0], [L, 0, 0], [L, W, 0], [0, W, 0],
-        [0, 0, H], [L, 0, H], [L, W, H], [0, W, H],
-    ], dtype=np.float32)
-
-    edges = [
-        (0, 1), (1, 2), (2, 3), (3, 0),
-        (4, 5), (5, 6), (6, 7), (7, 4),
-        (0, 4), (1, 5), (2, 6), (3, 7),
-    ]
-    for i, j in edges:
-        ax.plot([corners[i, 0], corners[j, 0]],
-                [corners[i, 1], corners[j, 1]],
-                [corners[i, 2], corners[j, 2]])
-
-
-def main() -> None:
+def main():
     args = parse_args()
-    in_root = Path(args.in_root)
+    root = Path(args.in_root)
 
-    coord_path = in_root / "coord.npy"
-    if not coord_path.exists():
-        raise FileNotFoundError(f"Missing: {coord_path}")
-    xyz = np.load(coord_path)
-    if xyz.ndim != 2 or xyz.shape[1] != 3:
-        raise ValueError(f"coord.npy must be (N,3), got {xyz.shape}")
+    coord = _load_npy(root, "coord.npy")
+    if coord is None:
+        raise FileNotFoundError(f"Missing coord.npy in {root}")
 
-    color_path = in_root / "color.npy"
-    rgb = None
-    if color_path.exists():
-        rgb = np.load(color_path)
-        if rgb.shape != xyz.shape:
-            raise ValueError(f"color.npy shape {rgb.shape} must match coord.npy shape {xyz.shape}")
-        if rgb.dtype != np.uint8:
-            # still support float colors, but uint8 is recommended
-            rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    color = _load_npy(root, "color.npy")  # optional
+    normal = _load_npy(root, "normal.npy")  # optional
 
-    # downsample (apply same indices to xyz and rgb)
-    n = xyz.shape[0]
-    if n > args.max_points:
-        rng = np.random.default_rng(args.seed)
-        idx = rng.choice(n, size=args.max_points, replace=False)
-        xyz_vis = xyz[idx]
-        rgb_vis = rgb[idx] if rgb is not None else None
+    rng = np.random.default_rng(args.seed)
+
+    # subsample points for scatter
+    idx = _subsample_indices(rng, coord.shape[0], args.max_points)
+    P = coord[idx].astype(np.float32, copy=False)
+
+    if color is not None and color.shape[0] == coord.shape[0]:
+        C = color[idx].astype(np.float32) / 255.0
     else:
-        xyz_vis = xyz
-        rgb_vis = rgb
-
-    # optional room dims from meta.json
-    meta_path = in_root / "meta.json"
-    room = None
-    if meta_path.exists():
-        try:
-            meta = json.loads(meta_path.read_text())
-            room = meta.get("room", None)
-        except Exception:
-            room = None
+        C = None
 
     fig = plt.figure()
     ax = fig.add_subplot(111, projection="3d")
-    ax.view_init(elev=args.elev, azim=args.azim)
 
-    if rgb_vis is not None:
-        colors01 = rgb_vis.astype(np.float32) / 255.0
-        ax.scatter(xyz_vis[:, 0], xyz_vis[:, 1], xyz_vis[:, 2], s=1, marker=".", c=colors01)
-    else:
-        ax.scatter(xyz_vis[:, 0], xyz_vis[:, 1], xyz_vis[:, 2], s=1, marker=".")
+    ax.scatter(P[:, 0], P[:, 1], P[:, 2], s=args.point_size, c=C)
+
+    # normals (quiver) — draw a smaller subsample
+    if args.show_normals:
+        if normal is None:
+            print("WARNING: --show-normals set but normal.npy not found.")
+        elif normal.shape[0] != coord.shape[0]:
+            print("WARNING: normal.npy length does not match coord.npy; skipping normals.")
+        else:
+            idxn = _subsample_indices(rng, coord.shape[0], args.max_normals)
+            Pn = coord[idxn].astype(np.float32, copy=False)
+            Nn = normal[idxn].astype(np.float32, copy=False)
+
+            # normalize just in case
+            nrm = np.linalg.norm(Nn, axis=1, keepdims=True)
+            Nn = Nn / np.maximum(nrm, 1e-20)
+
+            ax.quiver(
+                Pn[:, 0], Pn[:, 1], Pn[:, 2],
+                Nn[:, 0], Nn[:, 1], Nn[:, 2],
+                length=args.normal_scale,
+                normalize=True,
+                linewidth=0.8,
+                alpha=args.normal_alpha,
+            )
+
+    # optional room box from meta.json if present
+    if args.show_box:
+        meta_path = root / "meta.json"
+        if meta_path.exists():
+            import json
+            meta = json.loads(meta_path.read_text())
+            room = meta.get("sampled_room", None)
+            cfg = meta.get("scene_config", None)
+            if room is not None:
+                L, W, H = room["L"], room["W"], room["H"]
+                m = 0.0
+                if cfg is not None and "room_margin" in cfg:
+                    m = float(cfg["room_margin"])
+                _draw_box(ax, L, W, H, m=m)
+        else:
+            print("WARNING: --show-box set but meta.json not found.")
 
     ax.set_xlabel("x [m]")
     ax.set_ylabel("y [m]")
     ax.set_zlabel("z [m]")
 
-    if args.show_box and room is not None:
-        L, W, H = float(room["L"]), float(room["W"]), float(room["H"])
-        draw_room_box(ax, L, W, H)
+    # Keep axes roughly equal (simple heuristic)
+    mins = coord.min(axis=0)
+    maxs = coord.max(axis=0)
+    center = 0.5 * (mins + maxs)
+    size = float(np.max(maxs - mins))
+    half = 0.5 * size
+    ax.set_xlim(center[0] - half, center[0] + half)
+    ax.set_ylim(center[1] - half, center[1] + half)
+    ax.set_zlim(center[2] - half, center[2] + half)
 
-    if room is not None:
-        L, W, H = float(room["L"]), float(room["W"]), float(room["H"])
-        ax.set_xlim(0, L)
-        ax.set_ylim(0, W)
-        ax.set_zlim(0, H)
-    else:
-        mins = xyz_vis.min(axis=0)
-        maxs = xyz_vis.max(axis=0)
-        ax.set_xlim(mins[0], maxs[0])
-        ax.set_ylim(mins[1], maxs[1])
-        ax.set_zlim(mins[2], maxs[2])
-
-    set_axes_equal(ax)
-    title = f"{coord_path.name} ({xyz.shape[0]} pts)"
-    if rgb is not None:
-        title += " + color.npy"
-    plt.title(title)
+    plt.tight_layout()
     plt.show()
 
 

@@ -21,7 +21,7 @@ from typing import Callable, List, Tuple
 
 import numpy as np
 
-from sample_SQs import _make_cloud_once  # returns points4 Nx4, last col = SQ id
+from sample_SQs import _make_cloud_once_with_normals
 from dataclasses import asdict, replace
 
 
@@ -98,6 +98,7 @@ class SceneState:
 
     # accumulated outputs
     xyz: np.ndarray  # (N,3) float32
+    nrm: np.ndarray  # (N,3) float32
     rgb: np.ndarray  # (N,3) uint8
 
     # placed effective AABBs (after intersecting with room interior)
@@ -436,11 +437,12 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
     hues = _sample_distinct_hues(rng, n_obj, min_dist=0.12)
 
     xyz_list = []
+    nrm_list = []
     rgb_list = []
     pts_before = 0
 
     for j in range(n_obj):
-        points4, _sq_params = _make_cloud_once(
+        points4, normals, _sq_params = _make_cloud_once_with_normals(
             cfg.n_sq_max,
             cfg.points_per_object,
             rng=rng,
@@ -450,6 +452,7 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
         )
 
         xyz = points4[:, :3].astype(np.float32, copy=False)
+        nrm = normals.astype(np.float32, copy=False)
         sq_ids = points4[:, 3]
 
         if cfg.enable_scaling:
@@ -468,6 +471,7 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
         obj_mins, obj_maxs = _aabb_min_max(xyz)
 
         best_xyz = None
+        best_nrm = None
         best_eff_min = None
         best_eff_max = None
         best_score = float("inf")  # lower is better (max overlap ratio)
@@ -533,6 +537,7 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
                 # z_mode == 1 => float: do nothing
 
             xyz_cand = xyz + t
+            nrm_cand = nrm
             mins_w = obj_mins + t
             maxs_w = obj_maxs + t
 
@@ -549,19 +554,19 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
 
             if not cfg.enable_overlap_rejection:
                 # old behavior: accept immediately
-                best_xyz, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, eff_min, eff_max, eff_vol
+                best_xyz, best_nrm, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, nrm_cand, eff_min, eff_max, eff_vol
                 best_score = score
                 break
 
             # accept if passes threshold
             if score <= cfg.overlap_max_ratio:
-                best_xyz, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, eff_min, eff_max, eff_vol
+                best_xyz, best_nrm, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, nrm_cand, eff_min, eff_max, eff_vol
                 best_score = score
                 break
 
             # otherwise track best candidate
             if score < best_score:
-                best_xyz, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, eff_min, eff_max, eff_vol
+                best_xyz, best_nrm, best_eff_min, best_eff_max, best_eff_vol = xyz_cand, nrm_cand, eff_min, eff_max, eff_vol
                 best_score = score
 
         # Decide what to do if we never found a "good enough" placement
@@ -573,7 +578,8 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
             # Skip this object entirely
             continue
 
-        xyz = best_xyz  # accept best or accepted placement
+        xyz = best_xyz
+        nrm = best_nrm
 
         # Register effective AABB for future overlap tests (only if it has volume)
         if best_eff_vol > 0.0:
@@ -584,10 +590,12 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
         pts_before += xyz.shape[0]
         xyz_list.append(xyz)
         rgb_list.append(rgb)
+        nrm_list.append(nrm)
 
     if xyz_list:
         state.xyz = np.concatenate([state.xyz] + xyz_list, axis=0)
         state.rgb = np.concatenate([state.rgb] + rgb_list, axis=0)
+        state.nrm = np.concatenate([state.nrm] + nrm_list, axis=0)
 
     state.pts_before_clip += int(pts_before)
     return state
@@ -597,13 +605,16 @@ def stage_clip_to_room(state: SceneState, cfg: SceneConfig) -> SceneState:
     keep = _clip_keep_mask(state.xyz, state.L, state.W, state.H, cfg.room_margin)
     state.xyz = state.xyz[keep]
     state.rgb = state.rgb[keep]
+    state.nrm = state.nrm[keep]
     return state
+
 
 
 def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
     cfg.out_root.mkdir(parents=True, exist_ok=True)
 
     np.save(cfg.out_root / "coord.npy", state.xyz.astype(np.float32, copy=False))
+    np.save(cfg.out_root / "normal.npy", state.nrm.astype(np.float32, copy=False))
     np.save(cfg.out_root / "color.npy", state.rgb.astype(np.uint8, copy=False))
 
     if cfg.write_meta:
@@ -674,6 +685,7 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
     n_floor = max(0, n_floor + drift)
 
     xyz_list = []
+    nrm_list = []
     rgb_list = []
 
     # Simple fixed colors for debugging/visual distinction
@@ -688,8 +700,10 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
         z = np.full(n_floor, m, dtype=np.float32)
         xyz = np.stack([x, y, z], axis=1)
         rgb = np.repeat(floor_rgb[None, :], n_floor, axis=0)
+        nrm = np.repeat(np.array([[0, 0, 1]], dtype=np.float32), n_floor, axis=0)
         xyz_list.append(xyz)
         rgb_list.append(rgb)
+        nrm_list.append(nrm)
 
     # ceiling: z = H-m
     if n_ceil > 0:
@@ -698,36 +712,44 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
         z = np.full(n_ceil, H - m, dtype=np.float32)
         xyz = np.stack([x, y, z], axis=1)
         rgb = np.repeat(ceil_rgb[None, :], n_ceil, axis=0)
+        nrm = np.repeat(np.array([[0, 0, -1]], dtype=np.float32), n_ceil, axis=0)
         xyz_list.append(xyz)
         rgb_list.append(rgb)
+        nrm_list.append(nrm)
+
 
     # walls x=m and x=L-m
     if n_wx_each > 0:
-        for x_const in (m, L - m):
+        for x_const, nx in ((m, 1.0), (L - m, -1.0)):
             x = np.full(n_wx_each, x_const, dtype=np.float32)
             y = rng.uniform(m, W - m, size=n_wx_each).astype(np.float32)
             z = rng.uniform(m, H - m, size=n_wx_each).astype(np.float32)
             xyz = np.stack([x, y, z], axis=1)
             rgb = np.repeat(wall_rgb[None, :], n_wx_each, axis=0)
-            xyz_list.append(xyz)
-            rgb_list.append(rgb)
+            nrm = np.repeat(np.array([[nx, 0, 0]], dtype=np.float32), n_wx_each, axis=0)
+
+            xyz_list.append(xyz); rgb_list.append(rgb); nrm_list.append(nrm)
 
     # walls y=m and y=W-m
     if n_wy_each > 0:
-        for y_const in (m, W - m):
+        for y_const, ny in ((m, 1.0), (W - m, -1.0)):
             x = rng.uniform(m, L - m, size=n_wy_each).astype(np.float32)
             y = np.full(n_wy_each, y_const, dtype=np.float32)
             z = rng.uniform(m, H - m, size=n_wy_each).astype(np.float32)
             xyz = np.stack([x, y, z], axis=1)
             rgb = np.repeat(wall_rgb[None, :], n_wy_each, axis=0)
-            xyz_list.append(xyz)
-            rgb_list.append(rgb)
+            nrm = np.repeat(np.array([[0, ny, 0]], dtype=np.float32), n_wy_each, axis=0)
+
+            xyz_list.append(xyz); rgb_list.append(rgb); nrm_list.append(nrm)
 
     if xyz_list:
         xyz_shell = np.concatenate(xyz_list, axis=0)
         rgb_shell = np.concatenate(rgb_list, axis=0)
+        nrm_shell = np.concatenate(nrm_list, axis=0)
+
         state.xyz = np.concatenate([state.xyz, xyz_shell], axis=0)
         state.rgb = np.concatenate([state.rgb, rgb_shell], axis=0)
+        state.nrm = np.concatenate([state.nrm, nrm_shell], axis=0)
 
     return state
 
@@ -779,6 +801,7 @@ def main() -> None:
         W=W,
         H=H,
         xyz=np.zeros((0, 3), dtype=np.float32),
+        nrm=np.zeros((0, 3), dtype=np.float32),
         rgb=np.zeros((0, 3), dtype=np.uint8),
         pts_before_clip=0,
         placed_aabb_mins=[],
