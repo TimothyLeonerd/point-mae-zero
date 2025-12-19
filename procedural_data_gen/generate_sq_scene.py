@@ -618,21 +618,23 @@ def stage_write_outputs(state: SceneState, cfg: SceneConfig) -> SceneState:
     np.save(cfg.out_root / "color.npy", state.rgb.astype(np.uint8, copy=False))
 
     if cfg.write_meta:
-        meta = {
-            "scene_seed": state.scene_seed,
-            "sampled_room": {"L": state.L, "W": state.W, "H": state.H},
-            "points": {
-                "object_points_before_clip": int(state.pts_before_clip),
-                "points_after_clip": int(state.xyz.shape[0]),
-            },
-            "scene_config": _sceneconfig_to_jsonable(cfg),
-            }
-
+        meta = build_meta(state, cfg)
         (cfg.out_root / "meta.json").write_text(json.dumps(meta, indent=2))
 
     print(f"Wrote: {cfg.out_root / 'coord.npy'} and {cfg.out_root / 'color.npy'}")
     print(f"Room (L,W,H)=({state.L:.2f},{state.W:.2f},{state.H:.2f})  points={state.xyz.shape[0]}")
     return state
+
+def build_meta(state: SceneState, cfg: SceneConfig) -> dict:
+    return {
+        "scene_seed": int(state.scene_seed),
+        "sampled_room": {"L": float(state.L), "W": float(state.W), "H": float(state.H)},
+        "points": {
+            "object_points_before_clip": int(state.pts_before_clip),
+            "points_after_clip": int(state.xyz.shape[0]),
+        },
+        "scene_config": _sceneconfig_to_jsonable(cfg),
+    }
 
 def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
     """Add points on the *inner* room surfaces so they survive margin-based clipping.
@@ -756,12 +758,38 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
 
 
 # Order matters: later you’ll insert new stages here (e.g., room shell before clip).
-PIPELINE: List[Stage] = [
+PIPELINE_CORE: List[Stage] = [
     stage_add_room_shell,
     stage_add_objects_random,
     stage_clip_to_room,
+]
+
+PIPELINE: List[Stage] = [
+    *PIPELINE_CORE,
     stage_write_outputs,
 ]
+
+def generate_one_scene_arrays(cfg: SceneConfig, *, scene_seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
+    rng = np.random.default_rng(int(scene_seed))
+    L, W, H = _sample_room(rng, cfg)
+
+    state = SceneState(
+        scene_seed=int(scene_seed),
+        rng=rng,
+        L=L, W=W, H=H,
+        xyz=np.zeros((0, 3), dtype=np.float32),
+        rgb=np.zeros((0, 3), dtype=np.uint8),
+        nrm=np.zeros((0, 3), dtype=np.float32),
+        pts_before_clip=0,
+        placed_aabb_mins=[],
+        placed_aabb_maxs=[],
+    )
+
+    for stage in PIPELINE_CORE:
+        state = stage(state, cfg)
+
+    meta = build_meta(state, cfg)
+    return state.xyz, state.rgb, state.nrm, meta
 
 
 # ---------------------- CLI / main ----------------------
