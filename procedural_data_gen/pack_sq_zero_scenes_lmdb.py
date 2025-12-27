@@ -63,7 +63,7 @@ def pack_split(
             coord=coord.astype(np.float32, copy=False),
             color=color.astype(np.uint8, copy=False),
             normal=normal.astype(np.float32, copy=False),
-            meta=np.string_(json.dumps(meta)),
+            meta=np.bytes_(json.dumps(meta).encode("utf-8")),
         )
         payload = buf.getvalue()
 
