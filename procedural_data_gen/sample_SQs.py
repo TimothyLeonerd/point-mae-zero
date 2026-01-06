@@ -733,21 +733,101 @@ def _make_cloud_once(n_SQ_max: int, n_points: int, *, rng: Generator,
     pts = sample_N_SQs_naive_exactN(sq_pars_list, n_points, alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng)
     return pts, sq_pars_list
 
-def _make_cloud_once_with_normals(n_SQ_max: int, n_points: int, *, rng: Generator,
-                                  alpha=2.0, growth=1.3, max_rounds=6, normal_eps=1e-12):
+def _make_cloud_once_with_normals(
+    n_SQ_max: int,
+    n_points: int,
+    *,
+    rng: Generator,
+    alpha: float = 2.0,
+    growth: float = 1.3,
+    max_rounds: int = 6,
+    normal_eps: float = 1e-12,
+    use_primitives: bool = False,
+    p_primitive: float = 0.0,
+    primitive_type_probs=None,
+):
     """
-    One attempt: returns (points_with_ids Nx4 float64, normals Nx3 float64, sq_pars_list)
+    One attempt: returns (points_with_ids Nx4 float64, normals Nx3 float64, components)
+
+    This is now a generic multi-component sampler:
+      - We sample n_components in [1, n_SQ_max].
+      - For each component:
+          with probability p_primitive (if use_primitives=True):
+            sample a primitive (cube/sphere/cylinder/cone/torus),
+          otherwise:
+            sample a superquadric.
+      - Then we call shapes.sample_N_components_exactN_with_normals()
+        to get a union surface with symmetric overlap removal.
+
+    compatibility notes:
+      - If use_primitives=False or p_primitive <= 0, this reduces to a
+        "pure SQ" object, but using the new generic sampler instead of
+        sample_N_SQs_naive_exactN_with_normals().
+      - The third return value is now the list of ShapeComponent objects
+        instead of sq_pars_list, but the scene generator does not use it.
     """
-    rng = _require_gen(rng)
-    n_sqs = int(rng.integers(1, n_SQ_max + 1))
-    gens = _child_generators(rng, n_sqs)
-    sq_pars_list = [get_random_SQ_pars(g) for g in gens]
-    pts, nrm = sample_N_SQs_naive_exactN_with_normals(
-        sq_pars_list, n_points,
-        alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng,
-        normal_eps=normal_eps
+    from shapes import (
+        sample_shape_component_sq,
+        sample_shape_component_primitive,
+        sample_N_components_exactN_with_normals,
     )
-    return pts, nrm, sq_pars_list
+
+    rng = _require_gen(rng)
+
+    # Number of components (SQs + primitives) in this object
+    n_components = int(rng.integers(1, n_SQ_max + 1))
+
+    # Build primitive type prob dict if provided (cube, sphere, cylinder, cone, torus)
+    if primitive_type_probs is not None:
+        names = ["cube", "sphere", "cylinder", "cone", "torus"]
+        # Handle len mismatch defensively
+        n_names = min(len(names), len(primitive_type_probs))
+        prim_type_probs_dict = {
+            names[i]: float(primitive_type_probs[i]) for i in range(n_names)
+        }
+        # If the user passed fewer entries, fill the rest with 0.0
+        for name in names[n_names:]:
+            prim_type_probs_dict[name] = 0.0
+    else:
+        prim_type_probs_dict = {
+            "cube": 1.0,
+            "sphere": 1.0,
+            "cylinder": 1.0,
+            "cone": 1.0,
+            "torus": 1.0,
+        }
+
+    components = []
+    for cid in range(n_components):
+        if use_primitives and (p_primitive > 0.0) and (rng.random() < p_primitive):
+            comp = sample_shape_component_primitive(
+                rng,
+                type_probs=prim_type_probs_dict,
+                component_id=cid,
+            )
+        else:
+            comp = sample_shape_component_sq(
+                rng,
+                component_id=cid,
+            )
+        components.append(comp)
+
+    # Use the generic multi-component sampler (SQ + primitives)
+    points4, nrm, comp_ids = sample_N_components_exactN_with_normals(
+        components,
+        n_points=n_points,
+        rng=rng,
+        alpha=alpha,
+        growth=growth,
+        max_rounds=max_rounds,
+    )
+
+    # points4 already has shape (N, 4): [x, y, z, component_id]
+    # normals is (N, 3)
+    # We return components instead of sq_pars_list; the scene generator only
+    # cares about points4/normals, so this is safe.
+    return points4, nrm, components
+
 
 # ---- NPY writer (batched) ----
 def _write_npy_batch(batch: List[Tuple[np.ndarray, List[List[float]]]],

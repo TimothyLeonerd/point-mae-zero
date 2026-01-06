@@ -48,10 +48,34 @@ class SceneConfig:
     growth: float = 1.3
     max_rounds: int = 6
 
+    # primitives / SQ mix at object level
+    # If enable_primitives=False, this reduces to the old "pure SQ" behavior.
+    enable_primitives: bool = False
+    # Per-component probability of sampling a primitive instead of a superquadric.
+    p_primitive_component: float = 0.0
+    # Relative weights for primitive types: (cube, sphere, cylinder, cone, torus)
+    primitive_type_probs: Tuple[float, float, float, float, float] = (
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+        1.0,
+    )
+
     # room shell (walls/floor/ceiling) points
     enable_room_shell: bool = True
     room_shell_density: float = 200.0   # points per m^2 of surface
     room_shell_max_points: int = 200_000
+
+    # --- wall cutouts / occlusions ---
+    enable_wall_cutouts: bool = False
+    # Number of cutouts per scene (inclusive range)
+    wall_cutouts_n_range: Tuple[int, int] = (0, 0)
+    # Approx window/door size ranges in meters (in-plane extents on wall)
+    wall_cutout_size_xy_range: Tuple[float, float] = (0.5, 2.0)
+    wall_cutout_size_z_range: Tuple[float, float] = (0.5, 2.0)
+    # Thickness of the cutout along the wall normal (meters)
+    wall_cutout_thickness: float = 0.2
 
     # scaling (object-level)
     enable_scaling: bool = False
@@ -85,6 +109,10 @@ class SceneConfig:
     floor_gap_range: Tuple[float, float] = (0.0, 0.02)
     ceiling_gap_range: Tuple[float, float] = (0.0, 0.02)
     wall_gap_range: Tuple[float, float] = (0.0, 0.15)
+
+    # --- sensor-like noise ---
+    enable_noise: bool = False
+    noise_std: float = 0.0  # meters, std dev of Gaussian noise on xyz
 
 
 @dataclass
@@ -160,10 +188,22 @@ def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
     growth = _get(y, "objects", "growth", default=None)
     max_rounds = _get(y, "objects", "max_rounds", default=None)
 
+    # primitives (inside "objects" section)
+    obj_enable_primitives = _get(y, "objects", "enable_primitives", default=None)
+    obj_p_primitive = _get(y, "objects", "p_primitive_component", default=None)
+    obj_primitive_type_probs = _get(y, "objects", "primitive_type_probs", default=None)
+
     # walls
     walls_enable = _get(y, "walls", "enable", default=None)
     walls_density = _get(y, "walls", "density", default=None)
     walls_max_points = _get(y, "walls", "max_points", default=None)
+
+    # wall cutouts
+    enable_wall_cutouts = _get(y, "room", "enable_wall_cutouts", default=None)
+    wall_cutouts_n_range = _get(y, "room", "wall_cutouts_n_range", default=None)
+    wall_cutout_size_xy_range = _get(y, "room", "wall_cutout_size_xy_range", default=None)
+    wall_cutout_size_z_range = _get(y, "room", "wall_cutout_size_z_range", default=None)
+    wall_cutout_thickness = _get(y, "room", "wall_cutout_thickness", default=None)
 
     # scaling
     sc_enable = _get(y, "scaling", "enable", default=None)
@@ -192,6 +232,10 @@ def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
     pl_ceil_gap = _get(y, "placement", "ceiling_gap_range", default=None)
     pl_wall_gap = _get(y, "placement", "wall_gap_range", default=None)
 
+    # noise
+    enable_noise = _get(y, "room", "enable_noise", default=None)
+    noise_std = _get(y, "room", "noise_std", default=None)
+
     # Apply overrides (convert lists->tuples where needed)
     new_cfg = replace(
         cfg,
@@ -211,9 +255,35 @@ def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
         growth=float(growth) if growth is not None else cfg.growth,
         max_rounds=int(max_rounds) if max_rounds is not None else cfg.max_rounds,
 
+        enable_primitives=bool(obj_enable_primitives)
+        if obj_enable_primitives is not None
+        else cfg.enable_primitives,
+        p_primitive_component=float(obj_p_primitive)
+        if obj_p_primitive is not None
+        else cfg.p_primitive_component,
+        primitive_type_probs=tuple(obj_primitive_type_probs)
+        if obj_primitive_type_probs is not None
+        else cfg.primitive_type_probs,
+
         enable_room_shell=bool(walls_enable) if walls_enable is not None else cfg.enable_room_shell,
         room_shell_density=float(walls_density) if walls_density is not None else cfg.room_shell_density,
         room_shell_max_points=int(walls_max_points) if walls_max_points is not None else cfg.room_shell_max_points,
+
+        enable_wall_cutouts=bool(enable_wall_cutouts)
+        if enable_wall_cutouts is not None
+        else cfg.enable_wall_cutouts,
+        wall_cutouts_n_range=tuple(wall_cutouts_n_range)
+        if wall_cutouts_n_range is not None
+        else cfg.wall_cutouts_n_range,
+        wall_cutout_size_xy_range=tuple(wall_cutout_size_xy_range)
+        if wall_cutout_size_xy_range is not None
+        else cfg.wall_cutout_size_xy_range,
+        wall_cutout_size_z_range=tuple(wall_cutout_size_z_range)
+        if wall_cutout_size_z_range is not None
+        else cfg.wall_cutout_size_z_range,
+        wall_cutout_thickness=float(wall_cutout_thickness)
+        if wall_cutout_thickness is not None
+        else cfg.wall_cutout_thickness,
 
         enable_scaling=bool(sc_enable) if sc_enable is not None else cfg.enable_scaling,
         enable_size_classes=bool(sc_enable_classes) if sc_enable_classes is not None else cfg.enable_size_classes,
@@ -234,6 +304,13 @@ def _merge_config_into_sceneconfig(cfg: SceneConfig, y: dict) -> SceneConfig:
         floor_gap_range=tuple(pl_floor_gap) if pl_floor_gap is not None else cfg.floor_gap_range,
         ceiling_gap_range=tuple(pl_ceil_gap) if pl_ceil_gap is not None else cfg.ceiling_gap_range,
         wall_gap_range=tuple(pl_wall_gap) if pl_wall_gap is not None else cfg.wall_gap_range,
+
+        enable_noise=bool(enable_noise)
+        if enable_noise is not None
+        else cfg.enable_noise,
+        noise_std=float(noise_std)
+        if noise_std is not None
+        else cfg.noise_std,
 
     )
     return new_cfg
@@ -442,13 +519,16 @@ def stage_add_objects_random(state: SceneState, cfg: SceneConfig) -> SceneState:
     pts_before = 0
 
     for j in range(n_obj):
-        points4, normals, _sq_params = _make_cloud_once_with_normals(
+        points4, normals, _components = _make_cloud_once_with_normals(
             cfg.n_sq_max,
             cfg.points_per_object,
             rng=rng,
             alpha=cfg.alpha,
             growth=cfg.growth,
             max_rounds=cfg.max_rounds,
+            use_primitives=cfg.enable_primitives,
+            p_primitive=cfg.p_primitive_component,
+            primitive_type_probs=cfg.primitive_type_probs,
         )
 
         xyz = points4[:, :3].astype(np.float32, copy=False)
@@ -636,6 +716,94 @@ def build_meta(state: SceneState, cfg: SceneConfig) -> dict:
         "scene_config": _sceneconfig_to_jsonable(cfg),
     }
 
+def stage_apply_wall_cutouts(state: SceneState, cfg: SceneConfig) -> SceneState:
+    """
+    Remove points inside a few randomly placed boxes that touch the room walls.
+
+    This simulates windows, doors, or LiDAR "missing wall" regions.
+    The cutouts affect BOTH wall points and nearby object points, which is
+    actually nice if you want occlusion-like artifacts.
+    """
+    import numpy as np
+
+    if not cfg.enable_wall_cutouts:
+        return state
+
+    xyz = state.xyz
+    if xyz.shape[0] == 0:
+        return state
+
+    # We assume state has L, W, H and a rng like the other stages.
+    L, W, H = state.L, state.W, state.H
+    m = cfg.room_margin
+
+    # How many cutouts this scene gets
+    n_min, n_max = cfg.wall_cutouts_n_range
+    if n_max <= 0:
+        return state
+
+    if hasattr(state, "rng"):
+        rng = state.rng
+    else:
+        rng = np.random.default_rng()
+
+    n_cutouts = int(rng.integers(n_min, n_max + 1))
+    if n_cutouts <= 0:
+        return state
+
+    keep = np.ones(xyz.shape[0], dtype=bool)
+
+    for _ in range(n_cutouts):
+        # pick a wall: 0=x=m, 1=x=L-m, 2=y=m, 3=y=W-m
+        wall = int(rng.integers(0, 4))
+
+        # sample sizes (in-plane extents) and thickness
+        size_xy = rng.uniform(*cfg.wall_cutout_size_xy_range)
+        size_z = rng.uniform(*cfg.wall_cutout_size_z_range)
+        half_xy = 0.5 * size_xy
+        half_z = 0.5 * size_z
+        half_t = 0.5 * cfg.wall_cutout_thickness
+
+        if wall in (0, 1):
+            # x-walls: x ~ m or L-m, in-plane coords are (y, z)
+            x_plane = m if wall == 0 else (L - m)
+
+            y_center = rng.uniform(m, W - m)
+            z_center = rng.uniform(m, H - m)
+
+            mask = (
+                (xyz[:, 0] >= x_plane - half_t) & (xyz[:, 0] <= x_plane + half_t) &
+                (xyz[:, 1] >= y_center - half_xy) & (xyz[:, 1] <= y_center + half_xy) &
+                (xyz[:, 2] >= z_center - half_z) & (xyz[:, 2] <= z_center + half_z)
+            )
+        else:
+            # y-walls: y ~ m or W-m, in-plane coords are (x, z)
+            y_plane = m if wall == 2 else (W - m)
+
+            x_center = rng.uniform(m, L - m)
+            z_center = rng.uniform(m, H - m)
+
+            mask = (
+                (xyz[:, 1] >= y_plane - half_t) & (xyz[:, 1] <= y_plane + half_t) &
+                (xyz[:, 0] >= x_center - half_xy) & (xyz[:, 0] <= x_center + half_xy) &
+                (xyz[:, 2] >= z_center - half_z) & (xyz[:, 2] <= z_center + half_z)
+            )
+
+        keep &= ~mask
+
+    state.xyz = state.xyz[keep]
+    state.nrm = state.nrm[keep]
+    state.rgb = state.rgb[keep]
+
+    # Optional: track how many were removed, to store in meta if you want
+    if hasattr(state, "pts_removed_cutouts"):
+        state.pts_removed_cutouts += int((~keep).sum())
+    else:
+        state.pts_removed_cutouts = int((~keep).sum())
+
+    return state
+
+
 def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
     """Add points on the *inner* room surfaces so they survive margin-based clipping.
 
@@ -755,17 +923,41 @@ def stage_add_room_shell(state: SceneState, cfg: SceneConfig) -> SceneState:
 
     return state
 
+def stage_add_noise(state: SceneState, cfg: SceneConfig) -> SceneState:
+    """
+    Add simple Gaussian jitter to point coordinates to simulate sensor noise.
+    Normals are left unchanged (they remain "true" normals of the underlying geometry).
+    """
+    import numpy as np
+
+    if (not cfg.enable_noise) or cfg.noise_std <= 0.0:
+        return state
+
+    if state.xyz.shape[0] == 0:
+        return state
+
+    if hasattr(state, "rng"):
+        rng = state.rng
+    else:
+        rng = np.random.default_rng()
+
+    std = float(cfg.noise_std)
+    noise = rng.normal(loc=0.0, scale=std, size=state.xyz.shape).astype(np.float32)
+
+    state.xyz = (state.xyz.astype(np.float32) + noise).astype(np.float32)
+
+    # Optionally track how much we perturbed for meta
+    state.noise_std_applied = std
+
+    return state
 
 
-# Order matters: later you’ll insert new stages here (e.g., room shell before clip).
-PIPELINE_CORE: List[Stage] = [
+PIPELINE = [
     stage_add_room_shell,
     stage_add_objects_random,
+    stage_apply_wall_cutouts,
+    stage_add_noise,
     stage_clip_to_room,
-]
-
-PIPELINE: List[Stage] = [
-    *PIPELINE_CORE,
     stage_write_outputs,
 ]
 
