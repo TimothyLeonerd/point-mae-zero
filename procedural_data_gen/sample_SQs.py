@@ -216,6 +216,81 @@ def sample_SQ_pilu_dense(sq_pars, D: float, theta_eps: float = 1e-2) -> np.ndarr
 
     return P
 
+def sample_SQ_pilu_dense_pole_aware(
+    sq_pars,
+    D: float,
+    theta_eps: float = 1e-2,
+    pole_tol: float = 1e-6,
+) -> np.ndarray:
+    """
+    Pilu-style sampling of ONE SQ, pole-aware:
+      - sample latitude angles H with spacing ~D on meridian
+      - for each latitude, sample longitude angles O_i with spacing ~D on the *scaled* ring
+    Returns (M,3) points in WORLD coordinates (rotation+translation applied),
+    matching sample_SQ_naive convention: P_world = P_obj @ R.T + t
+    """
+    assert len(sq_pars) in (5, 11)
+
+    if len(sq_pars) == 5:
+        ax, ay, az, eps1, eps2 = sq_pars
+        euler = None
+        t = None
+    else:
+        ax, ay, az, eps1, eps2 = sq_pars[:5]
+        euler = sq_pars[5:8]
+        t = np.asarray(sq_pars[8:11], dtype=float)
+
+    # Latitude angles in [0, pi/2] (positive-z half), sampled on meridian (x-z superellipse)
+    H = pilu_angles_superellipse(1.0, az, eps1, D, theta_eps=theta_eps)
+
+    pts_first_octant = []
+
+    for eta in H:
+        c = math.cos(eta)
+        s_lat = c ** eps1  # scale of the ring in x/y at this latitude
+        z = az * (math.sin(eta) ** eps1)
+
+        # If the ring collapses (near the pole), emit a single point in first octant (x=y=0)
+        if s_lat <= pole_tol:
+            pts_first_octant.append(np.array([[0.0, 0.0, z]], dtype=float))
+            continue
+
+        ax_eff = ax * s_lat
+        ay_eff = ay * s_lat
+
+        # Longitude angles in [0, pi/2], sampled on the *scaled* ring
+        O = pilu_angles_superellipse(ax_eff, ay_eff, eps2, D, theta_eps=theta_eps)
+
+        x = ax_eff * (np.cos(O) ** eps2)
+        y = ay_eff * (np.sin(O) ** eps2)
+        zcol = np.full_like(x, z, dtype=float)
+
+        pts_first_octant.append(np.stack([x, y, zcol], axis=1))
+
+    P0 = np.vstack(pts_first_octant)  # first octant only, z>=0
+
+    # Mirror first octant to all 8 octants
+    pts = []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                P = P0.copy()
+                P[:, 0] *= sx
+                P[:, 1] *= sy
+                P[:, 2] *= sz
+                pts.append(P)
+
+    P = np.vstack(pts)
+
+    # Optional rotation/translation (same convention as before)
+    if euler is not None:
+        R = Rot.from_euler("xyz", euler).as_matrix()
+        P = P @ R.T
+    if t is not None:
+        P = P + t
+
+    return P
+
 def sample_N_SQs_pilu_exactN(
     sq_pars_N,
     n_points: int,
@@ -256,7 +331,7 @@ def sample_N_SQs_pilu_exactN(
         all_pts = []
 
         for i in range(n_SQs):
-            pts = sample_SQ_pilu_dense(sq_pars_N[i], D=D, theta_eps=theta_eps)  # (Mi, 3)
+            pts = sample_SQ_pilu_dense_pole_aware(sq_pars_N[i], D=D, theta_eps=theta_eps)  # (Mi, 3)
 
             # Optional early cap for speed/memory (keeps overlap removal tractable)
             if pts.shape[0] > max_pts_per_sq:
