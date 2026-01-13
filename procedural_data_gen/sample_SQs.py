@@ -6,6 +6,7 @@ from numpy.random import Generator
 import os, io, json, math, time, pathlib
 from typing import Dict, Tuple, List
 import lmdb
+import time
 
 # --- cache for trig grids so we don't re-mesh every call with same (n_theta, n_phi) ---
 _TRIG_CACHE = {}  # key: (n_theta, n_phi) -> dict with theta, phi, ct, st, cp, sp
@@ -1249,6 +1250,8 @@ def generate_pointzero_like_dataset(
 
     Returns a summary dict and writes train.txt / test.txt split files to `out_root`.
     """
+    import time
+
     rng = _require_gen(rng)
 
     out_root = pathlib.Path(out_root)
@@ -1282,6 +1285,11 @@ def generate_pointzero_like_dataset(
         "pilu_shrink": pilu_shrink if sampling == "pilu" else None,
         "pilu_theta_eps": pilu_theta_eps if sampling == "pilu" else None,
     }
+
+    # --- progress printing ---
+    PROGRESS_EVERY = 50
+    t_last_report = time.perf_counter()
+    saved_last_report = 0
 
     # --- LMDB writer init ---
     if storage == "lmdb":
@@ -1320,19 +1328,30 @@ def generate_pointzero_like_dataset(
             # MAIN KEY (loader-compatible): (N,3) float32
             key = f"train:{next_idx:08d}"  # fixed "train:" so split files can be train.txt/test.txt
             xyz = points4[:, :3].astype(dtype_points, copy=False)
-            writer.put(key, _np_serialize_to_bytes(xyz),
-                       pts_shape=(n_points_per_cloud, 3),
-                       dtype_points=str(np.dtype(dtype_points)))
+            writer.put(
+                key,
+                _np_serialize_to_bytes(xyz),
+                pts_shape=(n_points_per_cloud, 3),
+                dtype_points=str(np.dtype(dtype_points)),
+            )
 
             if mode == "enriched":
                 # SIDECARS
                 labels = points4[:, 3].astype(np.int32, copy=False)
                 sq_params = np.asarray(params, dtype=np.float32)  # (S,P)
 
-                writer.put(f"{key}.labels", _np_serialize_to_bytes(labels),
-                           pts_shape=(n_points_per_cloud,), dtype_points="int32")
-                writer.put(f"{key}.sq_params", _np_serialize_to_bytes(sq_params),
-                           pts_shape=tuple(sq_params.shape), dtype_points="float32")
+                writer.put(
+                    f"{key}.labels",
+                    _np_serialize_to_bytes(labels),
+                    pts_shape=(n_points_per_cloud,),
+                    dtype_points="int32",
+                )
+                writer.put(
+                    f"{key}.sq_params",
+                    _np_serialize_to_bytes(sq_params),
+                    pts_shape=tuple(sq_params.shape),
+                    dtype_points="float32",
+                )
 
             written_in_shard += 1
             summary["saved_clouds"] += 1
@@ -1357,9 +1376,24 @@ def generate_pointzero_like_dataset(
             next_idx += 1
 
             if len(batch_mem) >= npy_batch_size:
-                _write_npy_batch(batch_mem, base_dir, start_idx=next_idx - len(batch_mem),
-                                 mode=mode, dtype_points=np.dtype(dtype_points))
+                _write_npy_batch(
+                    batch_mem,
+                    base_dir,
+                    start_idx=next_idx - len(batch_mem),
+                    mode=mode,
+                    dtype_points=np.dtype(dtype_points),
+                )
                 batch_mem.clear()
+
+        # --- progress print every 1000 saved clouds ---
+        saved = summary["saved_clouds"]
+        if (saved % PROGRESS_EVERY) == 0:
+            now = time.perf_counter()
+            dt = now - t_last_report
+            delta = saved - saved_last_report  # should be 1000 except maybe if PROGRESS_EVERY changed
+            print(f"[progress] {saved}/{n_clouds} clouds generated; last {delta} took {dt:.2f}s", flush=True)
+            t_last_report = now
+            saved_last_report = saved
 
     # flush tails
     if storage == "lmdb":
@@ -1367,18 +1401,33 @@ def generate_pointzero_like_dataset(
         writer.close_with_metadata()
     else:
         if batch_mem:
-            _write_npy_batch(batch_mem, base_dir, start_idx=next_idx - len(batch_mem),
-                             mode=mode, dtype_points=np.dtype(dtype_points))
+            _write_npy_batch(
+                batch_mem,
+                base_dir,
+                start_idx=next_idx - len(batch_mem),
+                mode=mode,
+                dtype_points=np.dtype(dtype_points),
+            )
             batch_mem.clear()
+
+    # final partial-progress line (if we didn't land exactly on a 1000 boundary)
+    if summary["saved_clouds"] != saved_last_report:
+        now = time.perf_counter()
+        dt = now - t_last_report
+        delta = summary["saved_clouds"] - saved_last_report
+        print(f"[progress] {summary['saved_clouds']}/{n_clouds} clouds generated; last {delta} took {dt:.2f}s", flush=True)
 
     # Write split files train.txt / test.txt
     train_split, test_split = _write_split_files_always(
-        base_dir, total=summary["saved_clouds"],
-        train_ratio=train_ratio, shuffle=shuffle_split
+        base_dir,
+        total=summary["saved_clouds"],
+        train_ratio=train_ratio,
+        shuffle=shuffle_split,
     )
     summary["train_split"] = str(train_split)
-    summary["test_split"]  = str(test_split)
+    summary["test_split"] = str(test_split)
     return summary
+
 
 from time import perf_counter
 from contextlib import contextmanager
