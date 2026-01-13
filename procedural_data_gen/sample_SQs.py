@@ -1,4 +1,4 @@
-import open3d as o3d
+#import open3d as o3d
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.spatial.transform import Rotation as Rot
@@ -53,6 +53,245 @@ def mirror_octants(pts):
     out = mirrored.reshape(-1, 3)
 
     return out
+
+import math
+import numpy as np
+from scipy.spatial.transform import Rotation as Rot
+
+
+def _pilu_delta_theta_central(theta: float, a: float, b: float, eps: float, D: float) -> float:
+    """
+    Central-region chord/arc-length approximation:
+      Δθ ≈ D / ||d r(θ)/dθ||
+    for superellipse: x=a cos^eps θ, y=b sin^eps θ, θ in (0, π/2).
+
+    This form *does* include negative powers when eps<1, but we only use it
+    away from the endpoints (handled by the singularity branches).
+    """
+    c = math.cos(theta)
+    s = math.sin(theta)
+    # avoid 0 in the central region; endpoints are handled elsewhere
+    c_abs = abs(c)
+    s_abs = abs(s)
+
+    # speed = eps * sqrt( a^2 cos^(2eps-2) θ sin^2 θ + b^2 sin^(2eps-2) θ cos^2 θ )
+    # (derived from dx/dθ, dy/dθ)
+    speed_sq = (
+        (a * eps) ** 2 * (c_abs ** (2.0 * eps - 2.0)) * (s ** 2) +
+        (b * eps) ** 2 * (s_abs ** (2.0 * eps - 2.0)) * (c ** 2)
+    )
+    if speed_sq <= 0.0 or not math.isfinite(speed_sq):
+        return 0.0
+    return D / math.sqrt(speed_sq)
+
+
+def _pilu_delta_theta_near_zero(theta: float, b: float, eps: float, D: float) -> float:
+    """
+    Near θ≈0: y(θ) ≈ b θ^eps, enforce y(θ+Δ)-y(θ) ≈ D:
+
+      b((θ+Δ)^eps - θ^eps) = D
+      (θ+Δ)^eps = θ^eps + D/b
+      Δ = (θ^eps + D/b)^(1/eps) - θ
+    """
+    if b <= 0.0:
+        return 0.0
+    base = (theta ** eps) + (D / b)
+    if base <= 0.0:
+        return 0.0
+    return (base ** (1.0 / eps)) - theta
+
+
+def _pilu_delta_theta_near_halfpi(theta: float, a: float, eps: float, D: float) -> float:
+    """
+    Near θ≈π/2: let u = π/2 - θ, x(θ) ≈ a u^eps decreases as θ increases.
+    Enforce x(θ)-x(θ+Δ) ≈ D:
+
+      a(u^eps - (u-Δ)^eps) = D
+      (u-Δ)^eps = u^eps - D/a
+      Δ = u - (u^eps - D/a)^(1/eps)
+
+    If u^eps - D/a <= 0, we clamp to jump to the endpoint.
+    """
+    half_pi = 0.5 * math.pi
+    u = half_pi - theta
+    if u <= 0.0 or a <= 0.0:
+        return 0.0
+    base = (u ** eps) - (D / a)
+    if base <= 0.0:
+        # can't take a real root; just move to endpoint
+        return u
+    u_next = base ** (1.0 / eps)
+    return u - u_next
+
+
+def pilu_angles_superellipse(a: float, b: float, eps: float, D: float, theta_eps: float = 1e-2) -> np.ndarray:
+    """
+    Return a monotone increasing list of θ in [0, π/2] using Pilu-style stepping.
+    """
+    half_pi = 0.5 * math.pi
+    theta = 0.0
+    out = [0.0]
+
+    # defensive hard cap to prevent infinite loops if D is too small
+    for _ in range(300000):
+        if theta >= half_pi:
+            break
+
+        if theta <= theta_eps:
+            dth = _pilu_delta_theta_near_zero(theta, b, eps, D)
+        elif (half_pi - theta) <= theta_eps:
+            dth = _pilu_delta_theta_near_halfpi(theta, a, eps, D)
+        else:
+            dth = _pilu_delta_theta_central(theta, a, b, eps, D)
+
+        # guardrails
+        if not np.isfinite(dth) or dth <= 0.0:
+            dth = max(1e-4, 0.5 * theta_eps)
+
+        theta_next = theta + dth
+        if theta_next <= theta:
+            theta_next = theta + 1e-4
+
+        theta = min(theta_next, half_pi)
+        out.append(theta)
+
+        if theta >= half_pi - 1e-12:
+            break
+
+    if out[-1] < half_pi:
+        out.append(half_pi)
+
+    return np.array(out, dtype=float)
+
+
+def sample_SQ_pilu_dense(sq_pars, D: float, theta_eps: float = 1e-2) -> np.ndarray:
+    """
+    Pilu-style dense sampling of ONE SQ.
+    Returns (M,3) points in WORLD coordinates (rotation+translation applied),
+    matching the convention of sample_SQ_naive:
+        P_world = P_obj @ R.T + t
+    """
+    assert len(sq_pars) in (5, 11)
+
+    if len(sq_pars) == 5:
+        ax, ay, az, eps1, eps2 = sq_pars
+        euler = None
+        t = None
+    else:
+        ax, ay, az, eps1, eps2 = sq_pars[:5]
+        euler = sq_pars[5:8]
+        t = np.asarray(sq_pars[8:11], dtype=float)
+
+    # angles for vertical (η) and horizontal (ω) generating superellipses
+    H = pilu_angles_superellipse(1.0, az, eps1, D, theta_eps=theta_eps)      # η in [0, π/2]
+    O = pilu_angles_superellipse(ax, ay, eps2, D, theta_eps=theta_eps)       # ω in [0, π/2]
+
+    cosH_e1 = (np.cos(H) ** eps1)
+    sinH_e1 = (np.sin(H) ** eps1)
+    cosO_e2 = (np.cos(O) ** eps2)
+    sinO_e2 = (np.sin(O) ** eps2)
+
+    # first-octant grid (|x|,|y|,|z|)
+    X0 = ax * np.outer(cosH_e1, cosO_e2)
+    Y0 = ay * np.outer(cosH_e1, sinO_e2)
+    Z0 = az * (sinH_e1[:, None] * np.ones((1, len(O))))
+
+    # mirror to all 8 octants
+    pts = []
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            for sz in (-1.0, 1.0):
+                pts.append(np.stack([ (sx * X0).ravel(),
+                                      (sy * Y0).ravel(),
+                                      (sz * Z0).ravel() ], axis=1))
+    P = np.vstack(pts)
+
+    # apply optional rotation/translation (same convention as sample_SQ_naive)
+    if euler is not None:
+        R = Rot.from_euler("xyz", euler).as_matrix()
+        P = P @ R.T
+    if t is not None:
+        P = P + t
+
+    return P
+
+def sample_N_SQs_pilu_exactN(
+    sq_pars_N,
+    n_points: int,
+    *,
+    alpha: float = 2.0,
+    D0: float = 0.03,
+    shrink: float = 0.8,
+    max_rounds: int = 8,
+    theta_eps: float = 1e-2,
+    max_pts_per_sq: int | None = None,
+    rng: Generator,
+):
+    """
+    Global oversample (Pilu) → remove overlaps → global thin to exactly n_points.
+
+    Returns: (n_points, 4) float array, last col = SQ id.
+
+    Notes:
+      - Oversampling density is controlled by D (smaller D => more points).
+      - We retry with D *= shrink each round if we don't get enough survivors.
+      - Optional max_pts_per_sq can cap per-SQ points for speed (randomly thinned before overlap removal).
+    """
+    rng = _require_gen(rng)
+    n_SQs = len(sq_pars_N)
+    if n_points <= 0 or n_SQs == 0:
+        return np.empty((0, 4), dtype=float)
+
+    # rough per-component target for oversampling (used only for a default cap)
+    pts_target_per_sq = int(np.ceil(alpha * n_points / max(n_SQs, 1)))
+    if max_pts_per_sq is None:
+        # conservative: allow some headroom so overlap removal still leaves enough
+        max_pts_per_sq = max(5000, 4 * pts_target_per_sq)
+
+    M = 0
+    D = float(D0)
+
+    for _round in range(max_rounds):
+        all_pts = []
+
+        for i in range(n_SQs):
+            pts = sample_SQ_pilu_dense(sq_pars_N[i], D=D, theta_eps=theta_eps)  # (Mi, 3)
+
+            # Optional early cap for speed/memory (keeps overlap removal tractable)
+            if pts.shape[0] > max_pts_per_sq:
+                idx = rng.choice(pts.shape[0], size=max_pts_per_sq, replace=False)
+                pts = pts[idx]
+
+            # Remove points that lie inside other SQs (same logic as naive path)
+            for j in range(n_SQs):
+                if j != i:
+                    pts = remove_points_inside_SQ(pts, sq_pars_N[j])
+                    if pts.size == 0:
+                        break
+
+            if pts.size:
+                ids = np.full((pts.shape[0], 1), i, dtype=float)
+                all_pts.append(np.concatenate([pts, ids], axis=1))
+
+        if not all_pts:
+            # nothing survived; densify
+            D *= shrink
+            continue
+
+        survivors = np.concatenate(all_pts, axis=0)
+        M = survivors.shape[0]
+
+        if M >= n_points:
+            idx = rng.choice(M, n_points, replace=False)
+            return survivors[idx]
+
+        # Not enough points survived; densify and retry
+        D *= shrink
+
+    raise ValueError(
+        f"Could not reach {n_points} points after {max_rounds} rounds; "
+        f"last count={M}, last D={D}"
+    )
 
 
 def sample_SQ_Pilu(sq_pars, n_theta_quad, n_phi_quad):
@@ -722,16 +961,54 @@ def _child_generators(parent: Generator, n: int) -> List[Generator]:
     seeds = parent.integers(0, 2**32 - 1, size=n, dtype=np.uint32)
     return [np.random.default_rng(int(s)) for s in seeds]
 
-def _make_cloud_once(n_SQ_max: int, n_points: int, *, rng: Generator,
-                     alpha=2.0, growth=1.3, max_rounds=6) -> Tuple[np.ndarray, List[List[float]]]:
+def _make_cloud_once(
+    n_SQ_max: int,
+    n_points: int,
+    *,
+    rng: Generator,
+    alpha: float = 2.0,
+    growth: float = 1.3,
+    max_rounds: int = 6,
+    sampling: str = "naive",          # "naive" or "pilu"
+    pilu_D0: float = 0.03,
+    pilu_shrink: float = 0.8,
+    pilu_theta_eps: float = 1e-2,
+    pilu_max_rounds: int | None = None,
+    pilu_max_pts_per_sq: int | None = None,
+) -> Tuple[np.ndarray, List[List[float]]]:
     """One attempt: returns (points_with_ids Nx4 float64, sq_pars_list) or raises ValueError if cannot reach N."""
     rng = _require_gen(rng)
-    # number of Sqs: Uniform{1..n_SQ_max}
+
     n_sqs = int(rng.integers(1, n_SQ_max + 1))
     gens = _child_generators(rng, n_sqs)
     sq_pars_list = [get_random_SQ_pars(g) for g in gens]
-    pts = sample_N_SQs_naive_exactN(sq_pars_list, n_points, alpha=alpha, growth=growth, max_rounds=max_rounds, rng=rng)
+
+    if sampling == "naive":
+        pts = sample_N_SQs_naive_exactN(
+            sq_pars_list,
+            n_points,
+            alpha=alpha,
+            growth=growth,
+            max_rounds=max_rounds,
+            rng=rng,
+        )
+    elif sampling == "pilu":
+        pts = sample_N_SQs_pilu_exactN(
+            sq_pars_list,
+            n_points,
+            alpha=alpha,
+            D0=pilu_D0,
+            shrink=pilu_shrink,
+            max_rounds=(max_rounds if pilu_max_rounds is None else pilu_max_rounds),
+            theta_eps=pilu_theta_eps,
+            max_pts_per_sq=pilu_max_pts_per_sq,
+            rng=rng,
+        )
+    else:
+        raise ValueError(f"Unknown sampling='{sampling}' (expected 'naive' or 'pilu')")
+
     return pts, sq_pars_list
+
 
 def _make_cloud_once_with_normals(
     n_SQ_max: int,
@@ -943,6 +1220,12 @@ def generate_pointzero_like_dataset(
     lmdb_txn_batch: int = 100,
     npy_batch_size: int = 200,
     alpha: float = 2.0, growth: float = 1.3, max_rounds: int = 6,
+    sampling: str = "naive",
+    pilu_D0: float = 0.03,
+    pilu_shrink: float = 0.8,
+    pilu_theta_eps: float = 1e-2,
+    pilu_max_rounds: int | None = None,
+    pilu_max_pts_per_sq: int | None = None,
     rng: np.random.Generator = None,
     train_ratio: float = 0.95,
     shuffle_split: bool = True,
@@ -994,6 +1277,10 @@ def generate_pointzero_like_dataset(
         "shards_written": 0,
         "train_split": None,
         "test_split": None,
+        "sampling": sampling,
+        "pilu_D0": pilu_D0 if sampling == "pilu" else None,
+        "pilu_shrink": pilu_shrink if sampling == "pilu" else None,
+        "pilu_theta_eps": pilu_theta_eps if sampling == "pilu" else None,
     }
 
     # --- LMDB writer init ---
@@ -1012,8 +1299,18 @@ def generate_pointzero_like_dataset(
             # points4: (N,4) where last column are int labels (SQ index)
             # params:  list-of-lists with per-SQ parameter vectors for this cloud
             points4, params = _make_cloud_once(
-                n_SQ_max, n_points_per_cloud, rng=rng,
-                alpha=alpha, growth=growth, max_rounds=max_rounds
+                n_SQ_max,
+                n_points_per_cloud,
+                rng=rng,
+                alpha=alpha,
+                growth=growth,
+                max_rounds=max_rounds,
+                sampling=sampling,
+                pilu_D0=pilu_D0,
+                pilu_shrink=pilu_shrink,
+                pilu_theta_eps=pilu_theta_eps,
+                pilu_max_rounds=pilu_max_rounds,
+                pilu_max_pts_per_sq=pilu_max_pts_per_sq,
             )
         except ValueError:
             summary["skipped_attempts"] += 1

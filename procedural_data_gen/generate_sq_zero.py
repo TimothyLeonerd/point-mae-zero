@@ -70,6 +70,14 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42,
                    help="Seed for NumPy Generator; set to -1 to use random OS entropy")
 
+    p.add_argument("--sampling", choices=["naive", "pilu"], default="naive")
+
+    p.add_argument("--pilu-D0", type=float, default=0.03)
+    p.add_argument("--pilu-shrink", type=float, default=0.8)
+    p.add_argument("--pilu-theta-eps", type=float, default=1e-2)
+    p.add_argument("--pilu-max-rounds", type=int, default=None)
+    p.add_argument("--pilu-max-pts-per-sq", type=int, default=None)
+
     return p.parse_args()
 
 
@@ -98,6 +106,12 @@ def main():
         rng=rng,
         train_ratio=args.train_ratio,
         shuffle_split=args.shuffle_split,
+        sampling=args.sampling,
+        pilu_D0=args.pilu_D0,
+        pilu_shrink=args.pilu_shrink,
+        pilu_theta_eps=args.pilu_theta_eps,
+        pilu_max_rounds=args.pilu_max_rounds,
+        pilu_max_pts_per_sq=args.pilu_max_pts_per_sq,
     )
 
     # Pretty print a stable JSON summary
