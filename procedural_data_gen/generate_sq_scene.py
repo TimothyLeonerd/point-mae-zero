@@ -961,6 +961,8 @@ PIPELINE = [
     stage_write_outputs,
 ]
 
+PIPELINE_CORE = PIPELINE
+
 def generate_one_scene_arrays(cfg: SceneConfig, *, scene_seed: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
     rng = np.random.default_rng(int(scene_seed))
     L, W, H = _sample_room(rng, cfg)
