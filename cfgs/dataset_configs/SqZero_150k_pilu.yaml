@@ -1,0 +1,12 @@
+NAME: ZeroVerse
+
+# Folder that CONTAINS train.txt and test.txt
+DATA_PATH: /home/atuin/v123be/v123be13/data/SQ_Zero/150k
+
+# Folder that CONTAINS shard_00000/, shard_00001/, ...
+# (the loader scans all subdirs here and opens each as an LMDB env)
+PC_PATH: /home/atuin/v123be/v123be13/data/SQ_Zero/150k
+
+USE_LMDB: true
+N_POINTS: 8192
+whole: false
