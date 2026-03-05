@@ -637,6 +637,109 @@ def sample_SQ_naive_with_normals(sq_pars, n_theta, n_phi, *, normal_eps=1e-12):
 
     return P, N
 
+def sq_normals_finite_diff(
+    P_world: np.ndarray,
+    sq_pars,
+    *,
+    h: float | None = None,
+    eps: float = 1e-12,
+) -> np.ndarray:
+    """
+    Finite-difference normals from implicit function f(P) = sq_inside_value(P).
+    Returns unit normals (N,3) in WORLD coordinates.
+
+    h: step size in meters. If None, choose a scale-adaptive default from axes.
+    """
+    P_world = np.asarray(P_world, dtype=np.float32)
+    if P_world.ndim != 2 or P_world.shape[1] != 3:
+        raise ValueError(f"P_world must be (N,3), got {P_world.shape}")
+
+    # Pick a reasonable step size relative to SQ scale
+    if h is None:
+        # axes from sq_pars
+        if len(sq_pars) == 5:
+            ax, ay, az = map(float, sq_pars[:3])
+        else:
+            ax, ay, az = map(float, sq_pars[:3])
+        a_min = max(min(ax, ay, az), 1e-3)
+        # ~0.1% of smallest axis, clamped
+        h = float(np.clip(1e-3 * a_min, 5e-5, 5e-3))
+
+    # Evaluate f at +/- h along each axis (vectorized)
+    e0 = np.array([h, 0.0, 0.0], dtype=np.float32)
+    e1 = np.array([0.0, h, 0.0], dtype=np.float32)
+    e2 = np.array([0.0, 0.0, h], dtype=np.float32)
+
+    fx1 = sq_inside_value(P_world + e0[None, :], sq_pars, eps=eps)
+    fx0 = sq_inside_value(P_world - e0[None, :], sq_pars, eps=eps)
+    fy1 = sq_inside_value(P_world + e1[None, :], sq_pars, eps=eps)
+    fy0 = sq_inside_value(P_world - e1[None, :], sq_pars, eps=eps)
+    fz1 = sq_inside_value(P_world + e2[None, :], sq_pars, eps=eps)
+    fz0 = sq_inside_value(P_world - e2[None, :], sq_pars, eps=eps)
+
+    # Central differences
+    inv2h = 0.5 / h
+    gx = (fx1 - fx0) * inv2h
+    gy = (fy1 - fy0) * inv2h
+    gz = (fz1 - fz0) * inv2h
+
+    G = np.stack([gx, gy, gz], axis=1).astype(np.float32)
+
+    # Normalize
+    n = np.linalg.norm(G, axis=1, keepdims=True)
+    n = np.maximum(n, 1e-20)
+    N = G / n
+
+    # Optional: enforce outward orientation (should already be outward for this f)
+    dots = np.sum(N * P_world, axis=1)
+    flip = dots < 0.0
+    N[flip] *= -1.0
+
+    return N
+
+def sample_N_SQs_pilu_exactN_with_normals(
+    sq_pars_N,
+    n_points: int,
+    *,
+    alpha: float = 2.0,
+    D0: float = 0.03,
+    shrink: float = 0.8,
+    max_rounds: int = 8,
+    theta_eps: float = 1e-2,
+    max_pts_per_sq: int | None = None,
+    rng,
+    normal_h: float | None = None,
+):
+    """
+    Same as sample_N_SQs_pilu_exactN, but also returns normals (N,3) via finite differences.
+    Returns:
+      survivors: (n_points, 4) float, last col = SQ id
+      normals:   (n_points, 3) float32
+    """
+    survivors = sample_N_SQs_pilu_exactN(
+        sq_pars_N,
+        n_points,
+        alpha=alpha,
+        D0=D0,
+        shrink=shrink,
+        max_rounds=max_rounds,
+        theta_eps=theta_eps,
+        max_pts_per_sq=max_pts_per_sq,
+        rng=rng,
+    )
+
+    P = survivors[:, :3].astype(np.float32, copy=False)
+    ids = survivors[:, 3].astype(np.int64, copy=False)
+
+    normals = np.empty((P.shape[0], 3), dtype=np.float32)
+
+    # Compute normals per SQ-id (fast enough; K <= 9/12 typically)
+    for i in np.unique(ids):
+        mask = (ids == i)
+        normals[mask] = sq_normals_finite_diff(P[mask], sq_pars_N[int(i)], h=normal_h)
+
+    return survivors, normals
+
 def sq_inside_value(P_world: np.ndarray, sq_pars, *, eps=1e-12) -> np.ndarray:
     """
     Compute inside-outside value f(P) for the superellipsoid that matches your sampler.
