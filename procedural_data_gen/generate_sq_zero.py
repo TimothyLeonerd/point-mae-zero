@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# make_sq_dataset.py
+# generate_sq_zero.py
 """
 CLI to generate a superquadric LMDB/NPY dataset using sample_SQs.generate_pointzero_like_dataset.
 
@@ -17,6 +17,41 @@ import numpy as np
 
 from sample_SQs import generate_pointzero_like_dataset  # adjust import if placed elsewhere
 
+def _range2(xs):
+    if xs is None:
+        return None
+    if len(xs) != 2:
+        raise ValueError(f"Expected exactly two values, got {xs}")
+    lo, hi = float(xs[0]), float(xs[1])
+    if not lo < hi:
+        raise ValueError(f"Invalid range {xs}: expected min < max")
+    return (lo, hi)
+
+
+def _build_sq_param_ranges(args):
+    ranges = {}
+
+    mapping = {
+        "ax_range": "a_x",
+        "ay_range": "a_y",
+        "az_range": "a_z",
+        "eps1_range": "eps_1",
+        "eps2_range": "eps_2",
+        "eulerx_range": "euler_x",
+        "eulery_range": "euler_y",
+        "eulerz_range": "euler_z",
+        "tx_range": "t_x",
+        "ty_range": "t_y",
+        "tz_range": "t_z",
+    }
+
+    for arg_name, param_name in mapping.items():
+        value = getattr(args, arg_name)
+        parsed = _range2(value)
+        if parsed is not None:
+            ranges[param_name] = parsed
+
+    return ranges if ranges else None
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -78,6 +113,24 @@ def parse_args():
     p.add_argument("--pilu-max-rounds", type=int, default=None)
     p.add_argument("--pilu-max-pts-per-sq", type=int, default=None)
 
+    # SQ parameter ranges.
+    # Each takes two floats: MIN MAX.
+    # If omitted, sample_SQs.py old defaults are used.
+    p.add_argument("--ax-range", nargs=2, type=float, default=None)
+    p.add_argument("--ay-range", nargs=2, type=float, default=None)
+    p.add_argument("--az-range", nargs=2, type=float, default=None)
+
+    p.add_argument("--eps1-range", nargs=2, type=float, default=None)
+    p.add_argument("--eps2-range", nargs=2, type=float, default=None)
+
+    p.add_argument("--eulerx-range", nargs=2, type=float, default=None)
+    p.add_argument("--eulery-range", nargs=2, type=float, default=None)
+    p.add_argument("--eulerz-range", nargs=2, type=float, default=None)
+
+    p.add_argument("--tx-range", nargs=2, type=float, default=None)
+    p.add_argument("--ty-range", nargs=2, type=float, default=None)
+    p.add_argument("--tz-range", nargs=2, type=float, default=None)
+
     return p.parse_args()
 
 
@@ -86,6 +139,8 @@ def main():
 
     rng = None if args.seed == -1 else np.random.default_rng(args.seed)
     dtype = np.float32 if args.dtype_points == "float32" else np.float64
+
+    sq_param_ranges = _build_sq_param_ranges(args)
 
     summary = generate_pointzero_like_dataset(
         out_root=args.out_dir,
@@ -107,6 +162,7 @@ def main():
         train_ratio=args.train_ratio,
         shuffle_split=args.shuffle_split,
         sampling=args.sampling,
+        sq_param_ranges=sq_param_ranges,
         pilu_D0=args.pilu_D0,
         pilu_shrink=args.pilu_shrink,
         pilu_theta_eps=args.pilu_theta_eps,

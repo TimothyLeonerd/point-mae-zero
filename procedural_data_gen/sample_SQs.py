@@ -985,18 +985,74 @@ def _require_gen(rng):
         raise TypeError("rng must be a numpy.random.Generator (e.g., np.random.default_rng(42))")
     return rng
 
-def get_random_SQ_pars(rng: Generator, centered: bool=False):
+def get_random_SQ_pars(
+    rng: Generator,
+    centered: bool = False,
+    param_ranges: dict | None = None,
+):
+    """Sample one SQ parameter vector.
+
+    Parameter order:
+        [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
+
+    param_ranges maps names to (min, max), e.g.
+        {
+            "a_x": (0.15, 1.0),
+            "a_y": (0.15, 1.0),
+            "a_z": (0.15, 1.0),
+            "eps_1": (0.3, 1.7),
+            "eps_2": (0.3, 1.7),
+            "euler_x": (0.0, 2*np.pi),
+            "euler_y": (0.0, 2*np.pi),
+            "euler_z": (0.0, 2*np.pi),
+            "t_x": (-0.8, 0.8),
+            "t_y": (-0.8, 0.8),
+            "t_z": (-0.8, 0.8),
+        }
+
+    Missing keys fall back to the old defaults.
+    """
     rng = _require_gen(rng)
     U = rng.uniform
 
-    a_x = U(0.1, 1.0); a_y = U(0.1, 1.0); a_z = U(0.1, 3.0)
-    eps_1 = U(0.3, 3.0); eps_2 = U(0.3, 3.0)
-    euler_x = U(0.0, 2*np.pi); euler_y = U(0.0, 2*np.pi); euler_z = U(0.0, 2*np.pi)
+    default_ranges = {
+        "a_x": (0.1, 1.0),
+        "a_y": (0.1, 1.0),
+        "a_z": (0.1, 3.0),
+        "eps_1": (0.3, 3.0),
+        "eps_2": (0.3, 3.0),
+        "euler_x": (0.0, 2 * np.pi),
+        "euler_y": (0.0, 2 * np.pi),
+        "euler_z": (0.0, 2 * np.pi),
+        "t_x": (-1.0, 1.0),
+        "t_y": (-1.0, 1.0),
+        "t_z": (-1.0, 1.0),
+    }
+
+    if param_ranges is not None:
+        default_ranges.update(param_ranges)
+
+    def sample(name: str) -> float:
+        lo, hi = default_ranges[name]
+        return float(U(float(lo), float(hi)))
+
+    a_x = sample("a_x")
+    a_y = sample("a_y")
+    a_z = sample("a_z")
+
+    eps_1 = sample("eps_1")
+    eps_2 = sample("eps_2")
+
+    euler_x = sample("euler_x")
+    euler_y = sample("euler_y")
+    euler_z = sample("euler_z")
 
     if centered:
         t_x = t_y = t_z = 0.0
     else:
-        t_x = U(-1.0, 1.0); t_y = U(-1.0, 1.0); t_z = U(-1.0, 1.0)
+        t_x = sample("t_x")
+        t_y = sample("t_y")
+        t_z = sample("t_z")
 
     return [a_x, a_y, a_z, eps_1, eps_2, euler_x, euler_y, euler_z, t_x, t_y, t_z]
 
@@ -1149,6 +1205,7 @@ def _make_cloud_once(
     growth: float = 1.3,
     max_rounds: int = 6,
     sampling: str = "naive",          # "naive" or "pilu"
+    sq_param_ranges: dict | None = None,
     pilu_D0: float = 0.03,
     pilu_shrink: float = 0.8,
     pilu_theta_eps: float = 1e-2,
@@ -1160,7 +1217,10 @@ def _make_cloud_once(
 
     n_sqs = int(rng.integers(1, n_SQ_max + 1))
     gens = _child_generators(rng, n_sqs)
-    sq_pars_list = [get_random_SQ_pars(g) for g in gens]
+    sq_pars_list = [
+        get_random_SQ_pars(g, param_ranges=sq_param_ranges)
+        for g in gens
+    ]
 
     if sampling == "naive":
         pts = sample_N_SQs_naive_exactN(
@@ -1400,6 +1460,7 @@ def generate_pointzero_like_dataset(
     npy_batch_size: int = 200,
     alpha: float = 2.0, growth: float = 1.3, max_rounds: int = 6,
     sampling: str = "naive",
+    sq_param_ranges: dict | None = None,
     pilu_D0: float = 0.03,
     pilu_shrink: float = 0.8,
     pilu_theta_eps: float = 1e-2,
@@ -1459,6 +1520,7 @@ def generate_pointzero_like_dataset(
         "train_split": None,
         "test_split": None,
         "sampling": sampling,
+        "sq_param_ranges": sq_param_ranges,
         "pilu_D0": pilu_D0 if sampling == "pilu" else None,
         "pilu_shrink": pilu_shrink if sampling == "pilu" else None,
         "pilu_theta_eps": pilu_theta_eps if sampling == "pilu" else None,
@@ -1492,6 +1554,7 @@ def generate_pointzero_like_dataset(
                 growth=growth,
                 max_rounds=max_rounds,
                 sampling=sampling,
+                sq_param_ranges=sq_param_ranges,
                 pilu_D0=pilu_D0,
                 pilu_shrink=pilu_shrink,
                 pilu_theta_eps=pilu_theta_eps,
